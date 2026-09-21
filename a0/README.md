@@ -28,14 +28,34 @@ PowerShell 프로필 방식은 Windows 보안의 "제어된 폴더 액세스"가
 5. 기록 한 줄을 `%LOCALAPPDATA%\JevCode\a0\runs.jsonl`에 추가합니다.
 6. **Shadow 판단.** 제한된 실행 상태(`runs/<id>/state.txt`)를 만들어 판단 제공자에게 세 가지를 묻고, 답을 `decisions.jsonl`에 기록합니다. 실행 결과에는 영향이 없습니다.
 
-## 사용법
+## 리뷰 화면 (권장)
+
+```powershell
+jevcode ui
+```
+
+브라우저에 로컬 리뷰 화면이 열립니다. 서버를 계속 띄워 두고, 실행이 끝날 때마다 "새로고침" 후 리뷰하면 됩니다.
+
+- **대기열:** 리뷰하지 않은 실행 목록
+- **상세:** 작업, 실행기의 주장, 검증 출력(stdout+stderr), 변경 파일과 실제 diff, 실행한 명령, 거부 기록, shadow 판단
+- **리뷰 입력:** 수락/거절, 원인, **"이 화면만으로 결과와 원인을 설명할 수 있었나"**, 메모. 저장하면 다음 대기 실행으로 넘어갑니다.
+- **직접 사용 기록:** 버튼 하나로 `bypass`
+- **지표:** 우회 비율, 원인 설명 가능 비율, 리뷰 소요 시간(중앙값), 판단 제공자 평가
+
+화면으로 리뷰하면 CLI로는 남기기 어려운 두 값이 함께 기록됩니다.
+- `explainable`: 실패 원인 재구성 지표를 자동 집계합니다.
+- `viewedMs`: 상세 화면을 연 시각부터 저장까지의 시간입니다. 확인 시간 지표의 근거가 됩니다.
+
+서버는 `127.0.0.1`에서만 열리고, 실행마다 새 토큰이 붙은 주소로만 접근할 수 있습니다.
+
+## 사용법 (CLI)
 
 ```powershell
 jevcode init --verify "npm test" --timeout-min 30   # 저장소마다 한 번. 검증이 없으면 --verify 생략
 jevcode run --tag feature "점프 쿨다운 추가"          # 태그: scaffold / feature / fix / refactor / switch-cold / switch-brief
 jevcode log                                          # 최근 실행
 jevcode show <id>                                    # 상세 + shadow 판단 (id 앞부분만 입력해도 됨)
-jevcode review <id> accept|reject [--cause <원인>] [메모]
+jevcode review <id> accept|reject [--cause <원인>] [--explainable yes|no] [메모]
 jevcode bypass "긴 대화형 디버깅이라 직접 씀"          # 래퍼 없이 실행기를 직접 썼을 때
 jevcode stats                                        # A0 지표
 jevcode decide --all --provider jev                  # 저장된 상태로 Jev 소급 질의

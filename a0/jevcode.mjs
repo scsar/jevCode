@@ -9,7 +9,8 @@
 //   jevcode init --verify "npm test" [--verify ...] [--timeout-min 30]
 //   jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"
 //   jevcode log [n] | show <id> | stats | eval
-//   jevcode review <id> accept|reject [--cause <cause>] [reason]
+//   jevcode review <id> accept|reject [--cause <cause>] [--explainable yes|no] [reason]
+//   jevcode ui                      (local review screen, see ui.mjs)
 //   jevcode decide <id>|--all [--provider rules|jev]
 //   jevcode bypass [note]
 
@@ -333,7 +334,10 @@ async function runVerification({ repo, runDir, runTemp, env, commands, timeoutMs
     const status = !state || state.activeProcesses > 0 ? 'unknown'
       : state.terminatedBy === 'timeout' ? 'timed_out'
         : state.mainExitCode === 0 ? 'passed' : 'failed';
-    const tail = fs.readFileSync(out, 'utf8').split(/\r?\n/).filter(Boolean).slice(-15).join('\n');
+    // Test runners often report failures on stderr (e.g. node assert), so the tail covers both.
+    const tail = [out, out.replace('.out.', '.err.')]
+      .flatMap((f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split(/\r?\n/) : []))
+      .filter(Boolean).slice(-15).join('\n');
     results.push({ command, status, exitCode: state?.mainExitCode ?? null, durationMs: Date.now() - started, tail });
   }
   return results;
@@ -419,6 +423,11 @@ async function cmdRun(argv) {
     const endTree = snapshotTree(repo, runDir);
     const policyStatus = gitFingerprint(repo) === fp0 ? 'clean' : 'violated';
     const delta = treeDelta(repo, startTree, endTree);
+    // Snapshot trees are unreachable objects that `git gc` may prune, so keep the patch itself.
+    if (startTree !== endTree) {
+      const patch = execFileSync('git', ['-C', repo, 'diff', startTree, endTree], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      fs.writeFileSync(path.join(runDir, 'diff.patch'), patch.length > 2_000_000 ? `${patch.slice(0, 2_000_000)}\n[truncated]\n` : patch);
+    }
 
     const tVerify = Date.now();
     let verification = [];
@@ -523,14 +532,16 @@ function cmdShow(argv) {
 }
 
 function cmdReview(argv) {
-  const { opts, rest } = parseArgs(argv, { cause: 'value' });
+  const { opts, rest } = parseArgs(argv, { cause: 'value', explainable: 'value' });
   const [id, decision, ...reason] = rest;
-  if (!['accept', 'reject'].includes(decision)) die(`usage: jevcode review <id> accept|reject [--cause <${CAUSES.join('|')}>] [reason]`);
+  if (!['accept', 'reject'].includes(decision)) die(`usage: jevcode review <id> accept|reject [--cause <${CAUSES.join('|')}>] [--explainable yes|no] [reason]`);
   if (opts.cause && !CAUSES.includes(opts.cause)) die(`unknown cause ${opts.cause}; one of ${CAUSES.join(', ')}`);
+  if (opts.explainable && !['yes', 'no'].includes(opts.explainable)) die('--explainable takes yes or no');
   const r = findRun(id);
   appendJsonl(REVIEWS, {
     id: r.id, decision: decision === 'accept' ? 'accepted' : 'rejected', cause: opts.cause || null,
-    reason: reason.join(' ') || null, at: new Date().toISOString(),
+    explainable: opts.explainable ? opts.explainable === 'yes' : null,
+    reason: reason.join(' ') || null, source: 'cli', at: new Date().toISOString(),
   });
   console.log(`${r.id}: ${decision}ed`);
 }
@@ -594,9 +605,10 @@ const [command, ...argv] = process.argv.slice(2);
 const commands = {
   init: cmdInit, run: cmdRun, log: cmdLog, show: cmdShow, review: cmdReview, bypass: cmdBypass,
   stats: cmdStats, decide: cmdDecide, eval: cmdEval,
+  ui: async () => (await import('./ui.mjs')).start(),
 };
 if (!commands[command]) {
-  console.log('usage: jevcode init|run|log|show|review|decide|eval|bypass|stats  (see header of jevcode.mjs)');
+  console.log('usage: jevcode init|run|log|show|review|decide|eval|bypass|stats|ui  (see header of jevcode.mjs)');
   process.exit(command ? 1 : 0);
 }
 await commands[command](argv);

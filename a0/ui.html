@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JevCode 리뷰</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --line: #e3e2de; --text: #1f1f1d; --muted: #6b6a66;
+    --accent: #2f5bd3; --ok: #1f7a4c; --bad: #b3261e; --warn: #9a6200; --soft: #f0efeb;
+    --add-bg: #e8f5ec; --del-bg: #fbeaea; --hunk: #eef1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --line: #33322f; --text: #ecebe7; --muted: #9c9a94;
+      --accent: #7c9cf5; --ok: #5cc28c; --bad: #f0857c; --warn: #e0b04d; --soft: #292826;
+      --add-bg: #173323; --del-bg: #3a1c1a; --hunk: #22283a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", "Malgun Gothic", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  .pill { padding: 2px 10px; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .pill b { color: var(--text); }
+  .spacer { flex: 1; }
+  button, select, textarea, input { font: inherit; color: inherit; }
+  button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.sel-ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.sel-bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.sel { background: var(--text); border-color: var(--text); color: var(--panel); }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; min-height: calc(100vh - 53px); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  #list { border-right: 1px solid var(--line); overflow-y: auto; max-height: calc(100vh - 53px); }
+  .filters { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); }
+  .item { padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .item:hover { background: var(--soft); }
+  .item.active { background: var(--soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .item .task { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); white-space: nowrap; }
+  .b-ok { color: var(--ok); border-color: var(--ok); }
+  .b-bad { color: var(--bad); border-color: var(--bad); }
+  .b-warn { color: var(--warn); border-color: var(--warn); }
+  .b-muted { color: var(--muted); }
+  #detail { padding: 16px 20px 60px; overflow-y: auto; max-height: calc(100vh - 53px); }
+  .empty { color: var(--muted); padding: 40px; text-align: center; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+  section h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .label { color: var(--muted); min-width: 70px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.45 Consolas, "D2Coding", monospace; }
+  .scroll { max-height: 420px; overflow: auto; background: var(--soft); border-radius: 6px; padding: 8px; }
+  .diff .add { background: var(--add-bg); } .diff .del { background: var(--del-bg); } .diff .hunk { background: var(--hunk); color: var(--muted); }
+  .diff .file { font-weight: 700; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .claim { border-left: 3px solid var(--warn); padding-left: 10px; }
+  textarea { width: 100%; min-height: 60px; border: 1px solid var(--line); border-radius: 6px; padding: 6px; background: var(--bg); }
+  select { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--bg); }
+  .reviewbox { border-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; }
+  .done { color: var(--ok); font-weight: 600; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 760px; width: 92vw; }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  .kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .kpi div { background: var(--soft); border-radius: 8px; padding: 10px; }
+  .kpi b { display: block; font-size: 20px; }
+  .kpi .goal { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>JevCode 리뷰</h1>
+  <span class="pill">대기 <b id="pendingCount">-</b></span>
+  <span class="pill">실행 <b id="runCount">-</b></span>
+  <span class="spacer"></span>
+  <button id="bypassBtn" title="jevcode를 거치지 않고 실행기를 직접 쓴 경우 기록">직접 사용 기록</button>
+  <button id="statsBtn">지표</button>
+  <button id="reloadBtn">새로고침</button>
+</header>
+<main>
+  <div id="list">
+    <div class="filters">
+      <button data-filter="pending" class="sel">리뷰 대기</button>
+      <button data-filter="all">전체</button>
+    </div>
+    <div id="items"></div>
+  </div>
+  <div id="detail"><div class="empty">왼쪽에서 실행을 선택하세요.</div></div>
+</main>
+
+<dialog id="statsDialog"><div id="statsBody"></div><div class="row" style="justify-content:flex-end"><button onclick="this.closest('dialog').close()">닫기</button></div></dialog>
+<dialog id="bypassDialog">
+  <h3 style="margin-top:0">직접 사용 기록</h3>
+  <p class="hint">jevcode 없이 Codex나 Claude를 직접 쓴 작업을 남깁니다. A0의 우회 비율 지표에 들어갑니다.</p>
+  <textarea id="bypassNote" placeholder="이유 (예: 긴 대화형 디버깅이라 직접 씀)"></textarea>
+  <div class="row" style="justify-content:flex-end; margin-top:8px"><button onclick="this.closest('dialog').close()">취소</button><button class="primary" id="bypassSave">기록</button></div>
+</dialog>
+
+<script>
+const token = new URLSearchParams(location.search).get('t');
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, { ...opts, headers: { 'x-jevcode-token': token, 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+  return res.json();
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pct = (x) => (x == null ? '-' : `${Math.round(x * 100)}%`);
+const num = (n) => (n == null ? '-' : n.toLocaleString('ko-KR'));
+const when = (iso) => (iso ? new Date(iso).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '-');
+const secs = (ms) => (ms == null ? '-' : ms >= 60000 ? `${Math.floor(ms / 60000)}분 ${Math.round((ms % 60000) / 1000)}초` : `${Math.round(ms / 1000)}초`);
+
+const OUTCOME = { completed: ['완료', 'b-ok'], failed: ['실패', 'b-bad'], timed_out: ['시간초과', 'b-bad'], cancelled: ['취소', 'b-warn'], unknown: ['불명', 'b-bad'], quota_exhausted: ['한도소진', 'b-warn'] };
+const VERIFY = { passed: ['검증 통과', 'b-ok'], failed: ['검증 실패', 'b-bad'], skipped: ['검증 없음', 'b-muted'], unknown: ['검증 불명', 'b-warn'] };
+const badge = ([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`;
+const PRIORITY = ['가볍게', '보통', '꼼꼼히'];
+
+let meta = { causes: [], causeText: {} };
+let runs = [];
+let filter = 'pending';
+let current = null;
+let openedAt = 0;
+
+async function loadList(selectId) {
+  runs = await api('/api/runs');
+  const pending = runs.filter((r) => !r.review);
+  document.getElementById('pendingCount').textContent = pending.length;
+  document.getElementById('runCount').textContent = runs.length;
+  const shown = filter === 'pending' ? pending : runs;
+  document.getElementById('items').innerHTML = shown.length ? shown.map((r) => {
+    const reviewed = r.review ? badge(r.review.decision === 'accepted' ? ['수락', 'b-ok'] : ['거절', 'b-bad']) : '';
+    const pr = r.shadow.jev?.answers?.review_priority?.value ?? r.shadow.rules?.answers?.review_priority?.value;
+    return `<div class="item ${current === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
+      <div class="task">${esc(r.task)}</div>
+      <div class="meta">${badge(OUTCOME[r.executionOutcome] || [r.executionOutcome, 'b-muted'])}${badge(VERIFY[r.verificationStatus] || [r.verificationStatus, 'b-muted'])}
+        ${r.policyStatus === 'violated' ? badge(['정책 위반', 'b-bad']) : ''}${reviewed}
+        <span>${esc(r.repo)}</span>${r.tag ? `<span>#${esc(r.tag)}</span>` : ''}<span>${r.files}파일</span>
+        ${pr != null ? `<span title="shadow 판단 리뷰 우선순위">◆${PRIORITY[Math.round(pr)] || pr}</span>` : ''}
+      </div></div>`;
+  }).join('') : `<div class="empty">${filter === 'pending' ? '리뷰할 실행이 없습니다.' : '실행 기록이 없습니다.'}</div>`;
+  document.querySelectorAll('.item').forEach((el) => el.onclick = () => openRun(el.dataset.id));
+  if (selectId) openRun(selectId);
+}
+
+function renderDiff(patch) {
+  if (!patch) return '<span class="hint">변경 없음 또는 diff 파일 없음</span>';
+  return `<div class="scroll diff"><pre>${patch.split('\n').map((l) => {
+    const cls = l.startsWith('diff --git') ? 'file' : l.startsWith('@@') ? 'hunk' : l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : '';
+    return `<div class="${cls}">${esc(l) || ' '}</div>`;
+  }).join('')}</pre></div>`;
+}
+
+function renderDecision(d) {
+  if (d.error) return `<tr><td>${esc(d.provider)}</td><td colspan="3" class="hint">오류: ${esc(d.error)}</td><td>${esc(when(d.at))}</td></tr>`;
+  const a = d.answers || {};
+  const p = a.review_priority?.value;
+  const c = a.completion?.value;
+  return `<tr><td>${esc(d.provider)}<div class="hint">${esc(d.model)}</div></td>
+    <td>${p == null ? '-' : esc(PRIORITY[Math.round(p)] ?? p)}</td>
+    <td>${typeof c === 'number' ? pct(c) : '-'}</td>
+    <td>${esc(a.failure_cause?.value ?? '-')}</td>
+    <td>${d.provider === 'rules' ? '-' : `${d.latencyMs}ms`}</td></tr>`;
+}
+
+async function openRun(id) {
+  current = id;
+  openedAt = performance.now();
+  document.querySelectorAll('.item').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
+  const { run, review, decisions, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
+  const u = run.usage;
+  const failed = ['failed', 'timed_out', 'unknown'].includes(run.executionOutcome);
+  document.getElementById('detail').innerHTML = `
+    <section class="reviewbox">
+      <h2>리뷰 ${review ? `<span class="done">· ${review.decision === 'accepted' ? '수락' : '거절'}됨 (${esc(when(review.at))})</span>` : ''}</h2>
+      <div class="row"><span class="label">판정</span>
+        <button data-decision="accepted">수락</button><button data-decision="rejected">거절</button></div>
+      <div class="row"><span class="label">원인</span>
+        <select id="cause">${meta.causes.map((c) => `<option value="${c}">${c} — ${esc(meta.causeText[c])}</option>`).join('')}</select></div>
+      <div class="row"><span class="label" style="min-width:auto">이 화면만으로 결과와 원인을 설명할 수 있었나?</span>
+        <button data-explain="true">예</button><button data-explain="false">아니오</button></div>
+      <textarea id="note" placeholder="메모 (선택)"></textarea>
+      <div class="row" style="margin-top:8px"><button class="primary" id="submit">리뷰 저장 후 다음</button>
+        <span class="hint" id="formHint">${failed ? '실패한 실행입니다. 원인과 설명 가능 여부가 A0 지표에 들어갑니다.' : ''}</span></div>
+    </section>
+    <section>
+      <h2>요약 · ${esc(run.id)}</h2>
+      <div class="row">${badge(OUTCOME[run.executionOutcome] || [run.executionOutcome, 'b-muted'])}${badge(VERIFY[run.verificationStatus] || [run.verificationStatus, 'b-muted'])}
+        ${badge(run.policyStatus === 'clean' ? ['정책 정상', 'b-ok'] : ['정책 ' + run.policyStatus, 'b-bad'])}
+        <span class="pill">${esc(run.repo)}</span>${run.tag ? `<span class="pill">#${esc(run.tag)}</span>` : ''}</div>
+      <div class="row"><span class="label">시간</span>실행 ${secs(run.durations.execMs)} · 검증 ${secs(run.durations.verifyMs)} · ${esc(when(run.startedAt))}</div>
+      <div class="row"><span class="label">토큰</span>${u ? `입력 ${num(u.input)} (캐시 ${num(u.cachedInput)}) · 출력 ${num(u.output)}` : '-'}</div>
+      ${run.quotaSignalCandidates?.length ? `<div class="row"><span class="label">한도 신호?</span><pre>${esc(run.quotaSignalCandidates.join('\n'))}</pre></div>` : ''}
+      ${run.errors?.length ? `<div class="row"><span class="label">오류</span><pre>${esc(run.errors.join('\n'))}</pre></div>` : ''}
+    </section>
+    <section><h2>작업</h2><pre>${esc(run.task)}</pre></section>
+    <section><h2>실행기의 마지막 메시지 (검증되지 않은 주장)</h2><div class="claim"><pre>${esc(run.lastMessage || '(없음)')}</pre></div></section>
+    <section><h2>검증</h2>${run.verification.length ? run.verification.map((v, i) => `
+      <div class="row">${badge(VERIFY[v.status] || [v.status, 'b-muted'])}<code>${esc(v.command)}</code><span class="hint">exit ${v.exitCode ?? '-'} · ${secs(v.durationMs)}</span></div>
+      ${verificationTails[i] ? `<div class="scroll"><pre>${esc(verificationTails[i])}</pre></div>` : ''}`).join('') : '<span class="hint">설정된 검증 명령 없음</span>'}
+      ${run.verifiedTreeChanged ? '<p class="hint">⚠ 검증이 작업 트리를 바꿨습니다. 결과는 검증 전 상태 기준입니다.</p>' : ''}</section>
+    <section><h2>변경 (${run.delta.length}파일)</h2>
+      <table>${run.delta.map((d) => `<tr><td>${esc(d.status)}</td><td>${esc(d.path)}</td><td>+${d.add ?? '?'} −${d.del ?? '?'}</td></tr>`).join('')}</table>
+      <div style="margin-top:8px">${renderDiff(patch)}</div></section>
+    <section><h2>실행한 명령 (${run.commands.length})</h2>
+      <table>${run.commands.map((c) => `<tr><td>${c.exit === 0 ? '✓' : `<span style="color:var(--bad)">exit ${esc(c.exit)}</span>`}</td><td><pre>${esc(c.command)}</pre></td></tr>`).join('') || '<tr><td class="hint">없음</td></tr>'}</table></section>
+    ${run.denials.length ? `<section><h2>거부된 동작 (${run.denials.length})</h2><table>${run.denials.map((d) => `<tr><td>${esc(d.via)}</td><td><pre>${esc(d.detail)}</pre></td></tr>`).join('')}</table></section>` : ''}
+    <section><h2>Shadow 판단 (실행에는 영향 없음)</h2>
+      <table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${decisions.map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table></section>
+    <p class="hint">기록 위치: ${esc(dir)}${hasRawEvents ? ' · 원시 이벤트 보존됨' : ''}</p>`;
+
+  const state = { decision: review?.decision || null, explainable: typeof review?.explainable === 'boolean' ? review.explainable : null };
+  const causeEl = document.getElementById('cause');
+  causeEl.value = review?.cause || (run.executionOutcome === 'completed' && run.verificationStatus !== 'failed' ? 'none' : (decisions.find((d) => d.provider === 'rules')?.answers?.failure_cause?.value || 'none'));
+  document.getElementById('note').value = review?.reason || '';
+  const paint = () => {
+    document.querySelectorAll('[data-decision]').forEach((b) => b.className = b.dataset.decision === state.decision ? (state.decision === 'accepted' ? 'sel-ok' : 'sel-bad') : '');
+    document.querySelectorAll('[data-explain]').forEach((b) => b.className = String(state.explainable) === b.dataset.explain ? 'sel' : '');
+  };
+  document.querySelectorAll('[data-decision]').forEach((b) => b.onclick = () => {
+    state.decision = b.dataset.decision;
+    if (state.decision === 'accepted' && !review) causeEl.value = 'none';
+    paint();
+  });
+  document.querySelectorAll('[data-explain]').forEach((b) => b.onclick = () => { state.explainable = b.dataset.explain === 'true'; paint(); });
+  paint();
+  document.getElementById('submit').onclick = async () => {
+    const hint = document.getElementById('formHint');
+    if (!state.decision) { hint.textContent = '수락 또는 거절을 선택하세요.'; return; }
+    if (state.explainable == null) { hint.textContent = '설명 가능 여부를 선택하세요.'; return; }
+    await api(`/api/runs/${encodeURIComponent(run.id)}/review`, { method: 'POST', body: JSON.stringify({
+      decision: state.decision, cause: causeEl.value, explainable: state.explainable,
+      note: document.getElementById('note').value, viewedMs: performance.now() - openedAt }) });
+    const next = runs.find((r) => !r.review && r.id !== run.id);
+    await loadList(next ? next.id : run.id);
+  };
+}
+
+async function showStats() {
+  const s = await api('/api/stats');
+  const ok = (cond) => (cond == null ? '' : cond ? ' ✓' : ' ✗');
+  const evalRows = Object.entries(s.eval).map(([name, e]) => `<tr><td>${esc(name)}</td><td>${e.reviewed}</td>
+    <td>${e.brier == null ? '-' : e.brier.toFixed(3)}</td><td>${pct(e.accuracy)}</td>
+    <td>${Object.entries(e.byPriority).sort().map(([lvl, v]) => `${PRIORITY[lvl] ?? lvl}: ${v.rejected}/${v.n}`).join(', ') || '-'}</td>
+    <td>${pct(e.causeAgreement)} (${e.causeLabeled})</td></tr>`).join('');
+  document.getElementById('statsBody').innerHTML = `
+    <h3 style="margin-top:0">A0 지표</h3>
+    <div class="kpi">
+      <div>우회 비율<b>${pct(s.bypassRatio)}${ok(s.bypassRatio == null ? null : s.bypassRatio <= 0.5)}</b><span class="goal">목표 50% 이하 · 실행 ${s.runs} / 직접 ${s.bypasses}</span></div>
+      <div>원인 설명 가능<b>${pct(s.explainableRatio)}${ok(s.explainableRatio == null ? null : s.explainableRatio >= 0.7)}</b><span class="goal">목표 70% 이상 · 판정 ${s.explainableJudged} / 대상 ${s.troubled}</span></div>
+      <div>리뷰 소요 (중앙값)<b>${secs(s.medianReviewMs)}</b><span class="goal">표본 ${s.reviewTimeSamples}건 · 확인 시간 참고</span></div>
+      <div>리뷰 완료<b>${s.reviewed} / ${s.runs}</b><span class="goal">라벨이 Jev 평가의 정답</span></div>
+    </div>
+    <h3>판단 계층 평가 (설계 10.2)</h3>
+    <table><tr><th>제공자</th><th>리뷰됨</th><th>Brier ↓</th><th>정확도</th><th>우선순위별 거절</th><th>원인 일치</th></tr>${evalRows || '<tr><td colspan="6" class="hint">아직 없음</td></tr>'}</table>
+    <p class="hint">표본이 작으면 방향성만 봅니다.</p>`;
+  document.getElementById('statsDialog').showModal();
+}
+
+document.querySelectorAll('[data-filter]').forEach((b) => b.onclick = () => {
+  filter = b.dataset.filter;
+  document.querySelectorAll('[data-filter]').forEach((x) => x.className = x === b ? 'sel' : '');
+  loadList();
+});
+document.getElementById('reloadBtn').onclick = () => loadList(current);
+document.getElementById('statsBtn').onclick = showStats;
+document.getElementById('bypassBtn').onclick = () => { document.getElementById('bypassNote').value = ''; document.getElementById('bypassDialog').showModal(); };
+document.getElementById('bypassSave').onclick = async () => {
+  await api('/api/bypass', { method: 'POST', body: JSON.stringify({ note: document.getElementById('bypassNote').value }) });
+  document.getElementById('bypassDialog').close();
+};
+(async () => { meta = await api('/api/meta'); await loadList(decodeURIComponent(location.hash.slice(1)) || undefined); })().catch((e) => {
+  document.getElementById('detail').innerHTML = `<div class="empty">연결 실패: ${esc(e.message)}</div>`;
+});
+</script>
+</body>
+</html>
