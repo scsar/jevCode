@@ -1,7 +1,7 @@
 # JevCode System Design
 
 **Version:** 0.4  
-**Status:** A-gate 1차 결과와 인계 측정 준비를 반영한 설계 초안  
+**Status:** A-gate 1·2차 결과와 인계 측정 준비를 반영한 설계 초안  
 **Date:** 21 September 2026  
 **Implementation:** TypeScript / Node.js, 단일 패키지 + Windows 런처 헬퍼(C#)  
 **Initial platform:** Windows 11 네이티브 (WSL2 제외)  
@@ -26,7 +26,7 @@ Jev를 통한 자동 라우팅은 필수 로드맵이 아니라 조건부 연구
 |---|---|
 | A-gate 1차 | `codex-win-unelevated`가 전 항목 통과(codex-cli 0.155.1). A0 시작 가능 |
 | 첫 프로필 | unelevated로 A0 시작. elevated는 설치 후 별도 A-gate, 통과 시 전환 |
-| 커스텀 권한 프로필 | `:workspace` 대신 `jevcode-run`: 실제 `%TEMP%`·제어 디렉터리 deny, 실행별 temp 제공 |
+| 커스텀 권한 프로필 | `:workspace` 대신 `jevcode-run`: 실제 `%TEMP%` 쓰기 차단, 실행별 temp 제공. 제어 디렉터리 읽기 차단은 elevated 전용 |
 | 강제 수단 표기 | capability마다 OS 강제 / 앱 내부 강제 / 관측만을 구분 |
 | 남은 도구면 | hermetic 설정 후에도 남는 도구를 목록으로 관리. B 전에 차단 또는 경계 검증 |
 | 런처 헬퍼 | Windows 기본 `csc.exe`로 빌드하는 C# exe로 확정 |
@@ -44,7 +44,7 @@ Jev를 통한 자동 라우팅은 필수 로드맵이 아니라 조건부 연구
 
 | 단계 | 포함 | 합격 조건 | 상태 |
 |---|---|---|---|
-| A-gate | 프로필별 안전 스모크 검사 | 12.A-gate 전 항목 통과 | unelevated 1차 통과, v0.4 추가 항목 대기 |
+| A-gate | 프로필별 안전 스모크 검사 | 12.A-gate 전 항목 통과 | unelevated 2차 PASS-WITH-GAPS (G1.4 미지원) |
 | A0: 가치 검증 | 최소 래퍼 1~2주 실사용 + 전환 비용 실험 | 12.A0의 사전 정의 지표 | 대기 |
 | A: 호환성 검증 | 이벤트·종료·Job·quota 신호·남은 도구면·두 번째 프로필 | 프로필별 capability 보고서 | 일부 완료 |
 | B: 개인용 MVP | 한 실행기 수동 실행, 기록, 취소, 검증, inspect | 12.B 필수 시나리오 | |
@@ -109,25 +109,22 @@ jevcode handoff <run-id> --agent claude     # 단계 H, 조건부
 | `codex-win-elevated` | Codex Windows elevated 샌드박스(전용 샌드박스 사용자) + `jevcode-run` | 허용 | 미검사. 1회 관리자 설치 필요. 다른 사용자로 실행되므로 Job containment를 별도 검사 |
 | `claude-restricted` | `--restricted --strict-mcp-config` | 불가 | 미검사 |
 
-A0는 `codex-win-unelevated`로 시작한다. elevated가 A-gate를 통과하면 격리가 더 강한 elevated로 전환한다. 한 방식의 결과를 다른 방식에 적용하지 않는다.
+G1.4 빈틈(제어 디렉터리 읽기)을 수용하면 A0는 `codex-win-unelevated`로 시작한다(14절). elevated가 A-gate를 통과하면 격리가 더 강한 elevated로 전환한다. 한 방식의 결과를 다른 방식에 적용하지 않는다.
 
 ### 5.2 `jevcode-run` 권한 프로필
 
-A-gate 1차 결과, 기본 `:workspace` 프로필에는 두 가지 빈틈이 있다. 실제 `%TEMP%`에 쓸 수 있고, 작업 트리 밖 읽기가 넓게 허용되어 제어 디렉터리를 읽을 수 있는 것으로 추정된다. 그래서 JevCode는 실행마다 다음 커스텀 프로필을 생성해 전달한다.
+기본 `:workspace` 프로필에는 두 가지 빈틈이 있다(A-gate 2차 기준선에서 확인). 실제 `%TEMP%`에 쓸 수 있고, 작업 트리 밖 읽기가 허용되어 제어 디렉터리를 읽을 수 있다. 그래서 JevCode는 실행마다 커스텀 프로필 `jevcode-run`을 `-c` 인라인 TOML로 주입한다.
 
-```toml
-[permissions.jevcode-run]
-extends = ":workspace"
-
-[permissions.jevcode-run.filesystem]
-":tmpdir" = "deny"
-"<control dir>" = "deny"
-"<run temp dir>" = "write"
+```text
+-c "permissions={jevcode-run={extends=':workspace',filesystem={':tmpdir'='read','<run temp>'='write'[,'<control dir>'='deny']}}}"
+-P jevcode-run                          # codex sandbox
+-c default_permissions=jevcode-run      # codex exec (-s 대신)
 ```
 
-- 실행기와 검증 명령에는 `TEMP`/`TMP`를 실행별 temp 디렉터리로 지정해 전달한다. 이 디렉터리는 실행 종료 후 컨트롤러가 삭제한다.
-- `:tmpdir` deny로 도구가 깨지는지, 제어 디렉터리 읽기가 실제로 거부되는지는 A-gate 2차에서 확인한다(12.A-gate G1.3, G1.4).
-- 사용자 설정을 쓰지 않으므로(`--ignore-user-config`) 프로필은 `-c`로 주입하거나 JevCode 전용 `CODEX_HOME`의 설정으로 둔다. 방식은 A-gate 2차에서 확정한다.
+- 경로는 TOML 리터럴 문자열(작은따옴표)로 쓴다. 기본 문자열(큰따옴표)에서는 `C:\Users`의 `\U`가 이스케이프로 해석되어 파싱이 실패하고, 값 전체가 문자열로 취급된다.
+- `':tmpdir'='read'`로 실제 `%TEMP%` 쓰기를 막는다. `deny`는 읽기 제한이어서 unelevated에서 쓸 수 없다.
+- 실행기와 검증 명령에는 `TEMP`/`TMP`를 실행별 temp 디렉터리로 지정해 전달한다(부모 환경 변수가 샌드박스로 전달됨). 이 상태에서 git, node, `npm test`가 정상 동작한다(G1.5). 실행별 temp는 실행 종료 후 컨트롤러가 삭제한다.
+- **제어 디렉터리 읽기 차단은 elevated에서만 가능하다.** unelevated에서 읽기 deny 규칙을 넣으면 `Restricted read-only access requires the elevated Windows sandbox backend` 오류로 실행이 거부된다. 따라서 unelevated 프로필에는 제어 디렉터리 규칙을 넣지 않고, G1.4를 `unsupported`로 보고한다.
 
 ### 5.3 강제 수단 표기
 
@@ -313,18 +310,20 @@ A0 전환 비용 실험(12.A0)에서 브리프가 있을 때 **실패 접근 반
 |---|---|---|
 | G1.0 | 대조군: 작업 트리 안 쓰기 | PASS |
 | G1.1–1.2 | 작업 트리 밖·사용자 프로필 쓰기 거부 | PASS |
-| G1.3 | 실제 `%TEMP%` 쓰기 거부 (`jevcode-run`) | **v0.4 추가**. `:workspace`에서는 허용됨 |
-| G1.4 | 제어 디렉터리 읽기 거부 (`jevcode-run`) | **v0.4 추가** |
-| G1.5 | 실행별 temp에서 일반 도구(git, node, npm) 동작 | **v0.4 추가** |
+| G1.3 | 실제 `%TEMP%` 쓰기 거부 (`jevcode-run`) | PASS (2차) |
+| G1.4 | 제어 디렉터리 읽기 거부 (`jevcode-run`) | **UNSUPPORTED** (2차): elevated 전용 |
+| G1.5 | 실행별 temp에서 일반 도구(git, node, npm test) 동작 | PASS (2차) |
 | G2 | `.git` 불변 | PASS |
 | GN | 명령 네트워크 차단 | PASS |
 | G5a/b | Job containment (취소, 컨트롤러 강제 종료) | PASS |
-| M0–M2 | 모델 경로: 대조군, 셸·`apply_patch` 밖 쓰기 거부, `.git` 불변 | PASS |
+| M0–M2 | 모델 경로: 대조군, 셸·`apply_patch`·실제 `%TEMP%` 쓰기 거부, `.git` 불변 | PASS (M1c `%TEMP%`는 2차) |
 | M3 | web search 호출 없음 | PASS |
 | M5 | 모델이 실행한 프로세스의 Job containment | PASS |
 | G4 | `~/.codex`에 실행 흔적 없음 | PASS |
 
-v0.4 추가 항목(G1.3–G1.5)을 `jevcode-run` 프로필로 통과해야 A0 실사용을 시작한다. 프로필이 도구를 깨뜨리면(G1.5 실패) `:tmpdir` deny를 풀고 실제 `%TEMP%` 쓰기를 알려진 위험으로 기록한다.
+2차 결과: [spikes/a-gate/results/20260921-200654-unelevated.md](../../spikes/a-gate/results/20260921-200654-unelevated.md), 판정 PASS-WITH-GAPS.
+
+**unelevated에 남은 빈틈(G1.4):** 실행기가 제어 디렉터리를 읽을 수 있다. A0 기간의 제어 디렉터리에는 최소 래퍼의 실행 기록(작업 문구, delta 요약, 검증 결과, 토큰 사용량)만 있고 자격증명은 없다. 이 빈틈을 A0에서 수용할지는 사용자가 결정한다(14절). B의 시나리오 13(제어 디렉터리 읽기·쓰기 거부)은 elevated에서만 통과할 수 있다.
 
 ### A0. 가치 검증
 
@@ -408,15 +407,15 @@ jevcode/
 
 | 결정 | 현재 기본안 | 확정 시점 |
 |---|---|---|
-| `jevcode-run` 프로필 주입 방식 | `-c` 주입 vs 전용 `CODEX_HOME` | A-gate 2차 |
-| `:tmpdir` deny 유지 여부 | 유지, 도구가 깨지면 해제하고 위험 기록 | A-gate 2차 |
+| A0에서 G1.4 빈틈 수용 여부 | 수용(제어 디렉터리에 자격증명 없음) 또는 elevated 설치 후 A0 | A0 시작 전 |
+| B의 필수 프로필 | elevated (시나리오 13 때문) | elevated A-gate 후 |
 | 남은 도구면 처리 | 도구별 차단·검증·허용 명시 | B 착수 전 |
 | quota 신호 형식 | 실행기·버전별 fixture | 단계 A |
 | A0 지표 합격 수치 | 시작 전 고정 | A0 시작 |
 | elevated 전환 | elevated A-gate 통과 시 | elevated 설치 후 |
 | SQLite 드라이버와 Node 버전 | `node:sqlite`(RC 상태) vs `better-sqlite3` | 단계 B 시작 |
 
-확정된 결정: 첫 프로필(`codex-win-unelevated`로 A0 시작), 런처 헬퍼 구현(C# exe, 기본 `csc.exe` 빌드), 검증 러너 격리(`codex sandbox -P`), Codex 세션 저장 끄기(`--ephemeral` + 상태 디렉터리 재지정).
+확정된 결정: 런처 헬퍼 구현(C# exe, 기본 `csc.exe` 빌드), 검증 러너 격리(`codex sandbox -P jevcode-run`), Codex 세션 저장 끄기(`--ephemeral` + 상태 디렉터리 재지정), 프로필 주입(`-c` 인라인 TOML, 리터럴 문자열), temp 정책(`':tmpdir'='read'` + 실행별 temp).
 
 ## 15. 참고
 

@@ -7,6 +7,6 @@
 
 ## 현재 단계
 
-**A-gate 2차 (안전 스모크 게이트)** — 설계 12절 참고. 1차에서 `codex-win-unelevated`가 통과했고, v0.4에서 추가한 `jevcode-run` 프로필 항목(G1.3–G1.5)을 통과하면 A0 실사용을 시작한다. 실험 도구와 결과는 [spikes/a-gate](spikes/a-gate/README.md).
+**A-gate 2차 완료 (PASS-WITH-GAPS)** — `codex-win-unelevated` + `jevcode-run` 프로필이 제어 디렉터리 읽기 차단(G1.4, elevated 전용)을 제외하고 통과했다. 다음은 그 빈틈을 수용하고 A0를 시작할지, elevated를 설치해 검사할지 결정하는 것이다(설계 v0.4 14절). 실험 도구와 결과는 [spikes/a-gate](spikes/a-gate/README.md).
 
 실험 대상 저장소는 이 저장소 안이 아니라 매번 새로 만드는 일회용 디렉터리를 쓴다.

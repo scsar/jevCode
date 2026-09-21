@@ -32,6 +32,16 @@
 | 18 | 공용 프로젝트 지식은 `AGENTS.md`(+ `CLAUDE.md`의 `@AGENTS.md`), 사용자 리뷰 후 커밋. 실행기 노트는 provider 주장 | 5.6, 11.3 |
 | 19 | 시나리오 15(한도 소진 fixture) 추가 | 12.B |
 
+## A-gate 2차 반영 (같은 날, v0.4 개정)
+
+| # | 발견 | 변경 | 절 |
+|---|---|---|---|
+| 20 | `:workspace`에서 제어 디렉터리 읽기 가능 (추정에서 확인으로) | 제어 디렉터리 읽기 차단을 elevated 전용 capability로 명시 | 5.2, 12 |
+| 21 | 읽기 deny는 unelevated에서 실행 거부 (`requires the elevated Windows sandbox backend`) | unelevated 프로필은 G1.4 `unsupported`. B는 elevated 필수 | 5.2, 14 |
+| 22 | `':tmpdir'='read'` + 실행별 temp `write` + TEMP/TMP 전달로 실제 `%TEMP%` 쓰기 차단, git·node·npm test 정상 | temp 정책 확정 (`deny` 대신 `read`) | 5.2 |
+| 23 | 프로필 `-c` 인라인 주입 동작. 경로는 TOML 리터럴 문자열이어야 함 | 주입 방식 확정 | 5.2 |
+| 24 | `codex exec`에 `-c default_permissions=jevcode-run` 적용 확인 (모델의 `%TEMP%` 쓰기 "Access denied") | exec는 `-s` 대신 이 방식 사용 | 5.2 |
+
 ## 보류
 
 | 항목 | 이유 |
