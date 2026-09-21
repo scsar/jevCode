@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.env
+# 실험 산출물 (일회용 테스트 저장소, sentinel 로그)
+spikes/**/out/
+spikes/**/sandbox-*/
