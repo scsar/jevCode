@@ -9,11 +9,15 @@
 
 ## 설치 (한 번)
 
-PowerShell 프로필(`notepad $PROFILE`)에 한 줄을 추가합니다.
+`C:\Github\jevcode\bin`(`jevcode.cmd`가 있는 폴더)을 사용자 PATH에 추가합니다. 추가 후 새로 여는 터미널부터 PowerShell, cmd, Git Bash 어디서든 `jevcode`를 쓸 수 있습니다.
 
 ```powershell
-function jevcode { node C:\Github\jevcode\a0\jevcode.mjs @args }
+$bin = 'C:\Github\jevcode\bin'
+$user = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($user -split ';') -notcontains $bin) { [Environment]::SetEnvironmentVariable('Path', "$($user.TrimEnd(';'));$bin", 'User') }
 ```
+
+PowerShell 프로필 방식은 Windows 보안의 "제어된 폴더 액세스"가 켜져 있으면 `Documents` 쓰기가 막혀 동작하지 않습니다.
 
 ## 실행 한 번에 하는 일
 
