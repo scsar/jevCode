@@ -314,7 +314,10 @@ async function runVerification({ repo, runDir, runTemp, env, commands, timeoutMs
   const results = [];
   for (const [i, command] of commands.entries()) {
     // Propagate native exit codes; powershell -Command alone only reports $? of the last pipeline.
-    const script = `$global:LASTEXITCODE = 0; ${command}; $ok = $?; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (-not $ok) { exit 1 }; exit 0`;
+    // UTF-8 output keeps localized tool messages readable in tails and shadow state; progress
+    // records would otherwise be serialized into stdout as CLIXML.
+    const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; `
+      + `$global:LASTEXITCODE = 0; ${command}; $ok = $?; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (-not $ok) { exit 1 }; exit 0`;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
     const out = path.join(runDir, `verify-${i}.out.txt`);
     const started = Date.now();
