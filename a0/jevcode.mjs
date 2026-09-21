@@ -1,27 +1,31 @@
 #!/usr/bin/env node
-// JevCode A0 minimal wrapper (design v0.4, section 12.A0).
+// JevCode A0 minimal wrapper (design v0.5, section 12.A0).
 //
 // Runs Codex under the A-gate-verified isolation (JobLauncher + hermetic `codex exec` +
 // jevcode-run permission profile), records snapshot delta, commands, denials, token usage
-// and runtime-run verification as one JSON line per run. No dependencies, Windows only.
+// and runtime-run verification as one JSON line per run, then asks the shadow decision
+// providers (decisions.mjs) about the run. No dependencies, Windows only.
 //
-//   node jev.mjs init --verify "npm test" [--verify ...] [--timeout-min 30]
-//   node jev.mjs run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"
-//   node jev.mjs log [n] | show <id> | stats
-//   node jev.mjs review <id> accept|reject [reason]
-//   node jev.mjs bypass [note]
+//   jevcode init --verify "npm test" [--verify ...] [--timeout-min 30]
+//   jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"
+//   jevcode log [n] | show <id> | stats | eval
+//   jevcode review <id> accept|reject [--cause <cause>] [reason]
+//   jevcode decide <id>|--all [--provider rules|jev]
+//   jevcode bypass [note]
 
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(process.env.LOCALAPPDATA, 'JevCode', 'a0');
 const RUNS = path.join(ROOT, 'runs.jsonl');
 const REVIEWS = path.join(ROOT, 'reviews.jsonl');
 const BYPASSES = path.join(ROOT, 'bypasses.jsonl');
+const DECISIONS = path.join(ROOT, 'decisions.jsonl');
 const CONFIG = path.join(ROOT, 'repos.json');
 const TEMP_ROOT = path.join(process.env.LOCALAPPDATA, 'JevCode', 'tmp');
 const LAUNCHER_SRC = path.join(HERE, '..', 'spikes', 'a-gate', 'launcher', 'JobLauncher.cs');
@@ -34,7 +38,7 @@ const DENIAL_HINT = /access to the path .* is denied|permission denied|액세스
 // ---------------------------------------------------------------- small helpers
 
 function die(msg) {
-  console.error(`jev: ${msg}`);
+  console.error(`jevcode: ${msg}`);
   process.exit(1);
 }
 
@@ -347,7 +351,7 @@ function cmdInit(argv) {
 async function cmdRun(argv) {
   const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value' });
   const task = opts['prompt-file'] ? fs.readFileSync(opts['prompt-file'], 'utf8') : rest.join(' ');
-  if (!task.trim()) die('usage: jev run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"');
+  if (!task.trim()) die('usage: jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"');
 
   const repo = repoRoot();
   const cfg = readConfig()[repoKey(repo)] || { verify: [], timeoutMin: 30 };
@@ -445,6 +449,13 @@ async function cmdRun(argv) {
     if (executionOutcome === 'completed') fs.rmSync(eventsFile, { force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });
     printRun(record, verification);
+
+    // Shadow decisions: recorded only. The bounded state is kept so providers added later
+    // (e.g. once a Jev key exists) can be backfilled with `jevcode decide`.
+    const shadowState = buildState(record, verification);
+    fs.writeFileSync(path.join(runDir, 'state.txt'), shadowState);
+    const shadow = await runShadow({ record, state: shadowState, decisionsFile: DECISIONS });
+    console.log(` shadow: ${shadow.map(formatDecision).join('  |  ')}`);
   } finally {
     release();
     fs.rmSync(runTemp, { recursive: true, force: true });
@@ -469,7 +480,7 @@ function printRun(r, verificationWithTail) {
   if (r.verifiedTreeChanged) console.log(' ! verification modified the tree; results describe the pre-verification state');
   if (r.quotaSignalCandidates?.length) console.log(` ? quota signal candidates: ${r.quotaSignalCandidates.length} (see show)`);
   if (r.lastMessage) console.log(`\n${r.lastMessage.trim().split('\n').slice(0, 12).join('\n')}`);
-  console.log(`\n review: node jev.mjs review ${r.id} accept|reject [reason]`);
+  console.log(`\n review: jevcode review ${r.id} accept|reject [--cause <cause>] [reason]`);
 }
 
 function withReviews(runs) {
@@ -497,21 +508,56 @@ function cmdLog(argv) {
 }
 
 function cmdShow(argv) {
-  const r = findRun(argv[0] || die('usage: jev show <id>'));
+  const r = findRun(argv[0] || die('usage: jevcode show <id>'));
   printRun(r);
   console.log(`\n task: ${r.task.split('\n')[0].slice(0, 200)}`);
   for (const c of r.commands) console.log(`   $ ${c.command.slice(0, 140)} -> exit ${c.exit}`);
   for (const q of r.quotaSignalCandidates || []) console.log(`   ? ${q}`);
+  for (const d of readJsonl(DECISIONS).filter((x) => x.runId === r.id)) console.log(`   ~ ${formatDecision(d)}`);
+  if (r.review) console.log(` reviewed: ${r.review.decision}${r.review.cause ? ` (cause: ${r.review.cause})` : ''}${r.review.reason ? ` - ${r.review.reason}` : ''}`);
   const raw = path.join(ROOT, 'runs', r.id);
   console.log(`\n artifacts: ${raw}`);
 }
 
 function cmdReview(argv) {
-  const [id, decision, ...reason] = argv;
-  if (!['accept', 'reject'].includes(decision)) die('usage: jev review <id> accept|reject [reason]');
+  const { opts, rest } = parseArgs(argv, { cause: 'value' });
+  const [id, decision, ...reason] = rest;
+  if (!['accept', 'reject'].includes(decision)) die(`usage: jevcode review <id> accept|reject [--cause <${CAUSES.join('|')}>] [reason]`);
+  if (opts.cause && !CAUSES.includes(opts.cause)) die(`unknown cause ${opts.cause}; one of ${CAUSES.join(', ')}`);
   const r = findRun(id);
-  appendJsonl(REVIEWS, { id: r.id, decision: decision === 'accept' ? 'accepted' : 'rejected', reason: reason.join(' ') || null, at: new Date().toISOString() });
+  appendJsonl(REVIEWS, {
+    id: r.id, decision: decision === 'accept' ? 'accepted' : 'rejected', cause: opts.cause || null,
+    reason: reason.join(' ') || null, at: new Date().toISOString(),
+  });
   console.log(`${r.id}: ${decision}ed`);
+}
+
+async function cmdDecide(argv) {
+  const { opts, rest } = parseArgs(argv, { provider: 'value' });
+  const runs = readJsonl(RUNS);
+  const targets = rest[0] === '--all' ? runs : [findRun(rest[0] || die('usage: jevcode decide <id>|--all [--provider rules|jev]'))];
+  const active = providers(opts.provider);
+  if (!active.length) die(opts.provider === 'jev' ? 'set TYPESAFE_API_KEY to use the jev provider' : `no provider ${opts.provider}`);
+  if (active.some((p) => p.name !== 'rules')) console.log(`sending to TypeSafe per run: ${FIELDS_SENT.join('; ')}`);
+  for (const r of targets) {
+    const file = path.join(ROOT, 'runs', r.id, 'state.txt');
+    if (!fs.existsSync(file)) { console.log(`${r.id}: no stored state, skipped`); continue; }
+    const out = await runShadow({ record: r, state: fs.readFileSync(file, 'utf8'), decisionsFile: DECISIONS, only: opts.provider });
+    console.log(`${r.id}: ${out.map(formatDecision).join('  |  ')}`);
+  }
+}
+
+function cmdEval() {
+  const report = evaluate(readJsonl(RUNS), [...new Map(readJsonl(REVIEWS).map((v) => [v.id, v])).values()], readJsonl(DECISIONS));
+  const pct = (x) => (x == null ? '-' : `${Math.round(x * 100)}%`);
+  for (const [name, r] of Object.entries(report)) {
+    console.log(`${name}: reviewed runs ${r.reviewed}`);
+    console.log(`  completion  brier ${r.brier == null ? '-' : r.brier.toFixed(3)} (lower is better), accuracy@0.5 ${pct(r.accuracy)}`);
+    console.log(`  priority    ${Object.entries(r.byPriority).sort().map(([lvl, v]) => `L${lvl}: ${v.rejected}/${v.n} rejected`).join(', ') || '-'}`);
+    console.log(`  cause       agreement ${pct(r.causeAgreement)} on ${r.causeLabeled} labeled`);
+  }
+  if (!Object.keys(report).length) console.log('no decisions yet');
+  console.log('\nSmall samples: treat as direction only (design 10.2).');
 }
 
 function cmdBypass(argv) {
@@ -542,9 +588,12 @@ function cmdStats() {
 // ---------------------------------------------------------------- main
 
 const [command, ...argv] = process.argv.slice(2);
-const commands = { init: cmdInit, run: cmdRun, log: cmdLog, show: cmdShow, review: cmdReview, bypass: cmdBypass, stats: cmdStats };
+const commands = {
+  init: cmdInit, run: cmdRun, log: cmdLog, show: cmdShow, review: cmdReview, bypass: cmdBypass,
+  stats: cmdStats, decide: cmdDecide, eval: cmdEval,
+};
 if (!commands[command]) {
-  console.log('usage: jev init|run|log|show|review|bypass|stats  (see header of jev.mjs)');
+  console.log('usage: jevcode init|run|log|show|review|decide|eval|bypass|stats  (see header of jevcode.mjs)');
   process.exit(command ? 1 : 0);
 }
 await commands[command](argv);
