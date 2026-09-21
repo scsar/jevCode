@@ -151,12 +151,24 @@ codex exec --ephemeral --ignore-user-config --ignore-rules --json -s workspace-w
 
 이 조합으로 web search는 실제로 꺼졌고, 실행 후 `~/.codex`와 재지정 디렉터리 모두에 실행 흔적(nonce)이 남지 않았다.
 
+**A0 래퍼에서 추가한 옵션** (`a0/jev.mjs`):
+
+```text
+  -c agents.enabled=false -c features.multi_agent=false -c features.remote_plugin=false
+  -c features.hooks=false -c features.skill_mcp_dependency_install=false
+  -c "skills.config=[{path='<...>\SKILL.md',enabled=false}, ...]"
+```
+
+- **사용자·시스템 스킬은 `--ignore-user-config`로 막히지 않는다.** 첫 A0 실행에서 모델이 `~/.agents/skills/surgical-patch/SKILL.md`를 읽고 따랐다. 스킬 전체를 끄는 키는 없고, `skills.config`에서 `SKILL.md` 파일 경로마다 `enabled=false`를 줘야 한다(폴더 경로로는 꺼지지 않음). JevCode는 `~/.agents/skills`와 `~/.codex/skills`(`.system` 포함)를 실행마다 훑어 전부 끈다. 저장소 수준 스킬은 저장소 내용이므로 유지한다.
+- 이렇게 한 뒤 모델이 보고한 스킬 목록은 NONE이었고, `spawn_agent` 계열 도구도 사라졌다.
+- 부수 효과로 도구 설명 토큰이 줄었다. 거의 같은 요청에서 첫 턴 입력 토큰이 약 26k에서 8.8k로 줄었다(A0 기준선 해석 시 참고).
+
 **남은 도구면:** 위 설정 뒤에도 모델이 보고한 도구 목록에 다음이 남았다. 모델의 자기 보고이므로 A에서 실제 동작을 확인한다.
 
 | 도구 | 우려 | B 전 처리 |
 |---|---|---|
-| `spawn_agent` 등 협업 도구 | 하위 에이전트가 같은 샌드박스·Job에 있는지 | Job containment와 쓰기 거부를 하위 에이전트로 재검사 |
-| `request_plugin_install` | 설치가 샌드박스 밖에서 일어나는지 | `approval_policy=never`에서 거부되는지 확인 |
+| ~~`spawn_agent` 등 협업 도구~~ | | `agents.enabled=false`로 제거됨 |
+| `request_plugin_install`, `list_available_plugins_to_install` | 설치가 샌드박스 밖에서 일어나는지 | `approval_policy=never`에서 거부되는지 확인 |
 | `image_gen` | 외부 서비스 호출 | 끄는 설정을 찾거나 허용 목록에 명시 |
 | MCP 리소스 조회 | MCP 서버가 없으면 무해한지 | 서버 0개에서 빈 결과인지 확인 |
 
@@ -327,7 +339,7 @@ A0 전환 비용 실험(12.A0)에서 브리프가 있을 때 **실패 접근 반
 
 ### A0. 가치 검증
 
-최소 래퍼(snapshot → JobLauncher로 실행기 실행 → delta → 검증 → JSON 한 줄 기록 + 토큰 사용량)를 1~2주 실제 작업에 사용한다.
+최소 래퍼(snapshot → JobLauncher로 실행기 실행 → delta → 검증 → JSON 한 줄 기록 + 토큰 사용량)를 1~2주 실제 작업에 사용한다. 구현: [a0/](../../a0/README.md). 사용자 결정(2026-09-21): G1.4 빈틈을 수용하고 unelevated로 시작한다.
 
 **확인·추적 지표:**
 - 직접 실행 대비 결과 확인 시간.
@@ -407,7 +419,6 @@ jevcode/
 
 | 결정 | 현재 기본안 | 확정 시점 |
 |---|---|---|
-| A0에서 G1.4 빈틈 수용 여부 | 수용(제어 디렉터리에 자격증명 없음) 또는 elevated 설치 후 A0 | A0 시작 전 |
 | B의 필수 프로필 | elevated (시나리오 13 때문) | elevated A-gate 후 |
 | 남은 도구면 처리 | 도구별 차단·검증·허용 명시 | B 착수 전 |
 | quota 신호 형식 | 실행기·버전별 fixture | 단계 A |

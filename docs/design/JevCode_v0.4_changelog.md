@@ -42,6 +42,15 @@
 | 23 | 프로필 `-c` 인라인 주입 동작. 경로는 TOML 리터럴 문자열이어야 함 | 주입 방식 확정 | 5.2 |
 | 24 | `codex exec`에 `-c default_permissions=jevcode-run` 적용 확인 (모델의 `%TEMP%` 쓰기 "Access denied") | exec는 `-s` 대신 이 방식 사용 | 5.2 |
 
+## A0 래퍼 구현에서 나온 변경 (같은 날)
+
+| # | 발견 | 변경 | 절 |
+|---|---|---|---|
+| 25 | 사용자 결정: G1.4 빈틈 수용, unelevated로 A0 시작 | 14절 결정 해소 | 12.A0, 14 |
+| 26 | `--ignore-user-config`로도 `~/.agents/skills` 사용자 스킬이 로드되어 모델이 따름 | `SKILL.md` 경로별 `skills.config` 비활성화를 hermetic 인자에 추가 | 5.4 |
+| 27 | `agents.enabled=false`로 `spawn_agent` 계열 제거 확인 | 남은 도구면 표에서 제거 | 5.4 |
+| 28 | 스킬·협업 도구 제거 후 첫 턴 입력 토큰 약 26k에서 8.8k로 감소 | A0 기준선 해석 시 참고로 기록 | 5.4 |
+
 ## 보류
 
 | 항목 | 이유 |
