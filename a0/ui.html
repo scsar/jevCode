@@ -132,7 +132,8 @@ async function loadList(selectId) {
   document.getElementById('runCount').textContent = runs.length;
   const shown = filter === 'pending' ? pending : runs;
   document.getElementById('items').innerHTML = shown.length ? shown.map((r) => {
-    const reviewed = r.review ? badge(r.review.decision === 'accepted' ? ['수락', 'b-ok'] : ['거절', 'b-bad']) : '';
+    const reviewed = (r.review ? badge(r.review.decision === 'accepted' ? ['수락', 'b-ok'] : ['거절', 'b-bad']) : '')
+      + (r.commit ? badge([`커밋 ${r.commit.sha.slice(0, 7)}`, 'b-ok']) : '');
     const pr = r.shadow.jev?.answers?.review_priority?.value ?? r.shadow.rules?.answers?.review_priority?.value;
     return `<div class="item ${current === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
       <div class="task">${esc(r.task)}</div>
@@ -183,8 +184,9 @@ async function openRun(id) {
       <div class="row"><span class="label" style="min-width:auto">이 화면만으로 결과와 원인을 설명할 수 있었나?</span>
         <button data-explain="true">예</button><button data-explain="false">아니오</button></div>
       <textarea id="note" placeholder="메모 (선택)"></textarea>
-      <div class="row" style="margin-top:8px"><button class="primary" id="submit">리뷰 저장 후 다음</button>
+      <div class="row" style="margin-top:8px"><button id="submit">리뷰만 저장 후 다음</button>
         <span class="hint" id="formHint">${failed ? '실패한 실행입니다. 원인과 설명 가능 여부가 A0 지표에 들어갑니다.' : ''}</span></div>
+      <div id="commitPanel" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px"><span class="hint">커밋 가능 여부 확인 중…</span></div>
     </section>
     <section>
       <h2>요약 · ${esc(run.id)}</h2>
@@ -227,15 +229,50 @@ async function openRun(id) {
   });
   document.querySelectorAll('[data-explain]').forEach((b) => b.onclick = () => { state.explainable = b.dataset.explain === 'true'; paint(); });
   paint();
-  document.getElementById('submit').onclick = async () => {
-    const hint = document.getElementById('formHint');
-    if (!state.decision) { hint.textContent = '수락 또는 거절을 선택하세요.'; return; }
-    if (state.explainable == null) { hint.textContent = '설명 가능 여부를 선택하세요.'; return; }
+  const hint = document.getElementById('formHint');
+  const saveReview = async () => {
+    if (!state.decision) { hint.textContent = '수락 또는 거절을 선택하세요.'; return false; }
+    if (state.explainable == null) { hint.textContent = '설명 가능 여부를 선택하세요.'; return false; }
     await api(`/api/runs/${encodeURIComponent(run.id)}/review`, { method: 'POST', body: JSON.stringify({
       decision: state.decision, cause: causeEl.value, explainable: state.explainable,
       note: document.getElementById('note').value, viewedMs: performance.now() - openedAt }) });
+    return true;
+  };
+  const goNext = async () => {
     const next = runs.find((r) => !r.review && r.id !== run.id);
     await loadList(next ? next.id : run.id);
+  };
+  document.getElementById('submit').onclick = async () => { if (await saveReview()) await goNext(); };
+
+  // Accept-and-commit: only this run's files, only if unchanged since the run, never pushes.
+  const panel = document.getElementById('commitPanel');
+  const check = await api(`/api/runs/${encodeURIComponent(run.id)}/commit-check`);
+  if (check.committed) {
+    panel.innerHTML = `<span class="done">커밋됨</span> <code>${esc(check.committed.sha.slice(0, 8))}</code> ${esc(check.committed.message)} <span class="hint">(${esc(when(check.committed.at))}, push는 터미널에서)</span>`;
+    return;
+  }
+  const fileRows = check.files.map((f) => `<tr><td>${esc(f.status)}</td><td>${esc(f.path)}</td><td>${f.issue ? `<span style="color:var(--bad)">${esc(f.issue)}</span>` : ''}</td></tr>`).join('');
+  panel.innerHTML = `
+    <div class="row"><b>수락하고 커밋</b><span class="hint">이 실행이 바꾼 파일만 커밋합니다. push는 하지 않습니다.</span></div>
+    ${check.files.length ? `<table>${fileRows}</table>` : ''}
+    ${check.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join('')}
+    <div class="row" style="margin-top:8px"><input id="commitMsg" style="flex:1; min-width:240px; border:1px solid var(--line); border-radius:6px; padding:5px 8px; background:var(--bg)" value="${esc(check.suggestedMessage)}">
+      <button class="primary" id="commitBtn" ${check.ok ? '' : 'disabled'}>수락하고 커밋</button></div>
+    <div class="hint">커밋 메시지 끝에 <code>Jevcode-Run: ${esc(run.id)}</code>가 붙습니다.</div>`;
+  const commitBtn = document.getElementById('commitBtn');
+  if (!check.ok) commitBtn.style.opacity = '0.5';
+  commitBtn.onclick = async () => {
+    state.decision = 'accepted';
+    if (!review) causeEl.value = 'none';
+    paint();
+    if (!(await saveReview())) return;
+    const result = await api(`/api/runs/${encodeURIComponent(run.id)}/commit`, { method: 'POST', body: JSON.stringify({ message: document.getElementById('commitMsg').value }) });
+    if (!result.ok) {
+      hint.textContent = '리뷰는 저장했지만 커밋하지 못했습니다.';
+      panel.insertAdjacentHTML('beforeend', result.check.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join(''));
+      return;
+    }
+    await goNext();
   };
 }
 

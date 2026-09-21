@@ -5,7 +5,7 @@
 // capture well: `explainable` (could the cause be understood from this screen alone) and
 // `viewedMs` (time from opening a run to submitting its review).
 
-import { exec } from 'node:child_process';
+import { exec, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -20,6 +20,7 @@ const FILES = {
   reviews: path.join(ROOT, 'reviews.jsonl'),
   bypasses: path.join(ROOT, 'bypasses.jsonl'),
   decisions: path.join(ROOT, 'decisions.jsonl'),
+  commits: path.join(ROOT, 'commits.jsonl'),
 };
 const FAILED = new Set(['failed', 'timed_out', 'unknown']);
 
@@ -56,9 +57,97 @@ function readTail(outFile, lines) {
   return text ? text.split(/\r?\n/).slice(-lines).join('\n') : null;
 }
 
+// ---------------------------------------------------------------- accept-and-commit
+//
+// A commit happens only when the user presses the button after reviewing, and only for the files
+// this run changed, and only if each file still has exactly the content the run left (so what gets
+// committed is what was reviewed). Files that already had uncommitted edits before the run are
+// refused, because committing them would sweep those unrelated edits in. Nothing is ever pushed.
+
+function git(repo, args, input) {
+  return execFileSync('git', ['-C', repo, ...args], {
+    encoding: 'utf8', input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_LITERAL_PATHSPECS: '1' },
+  }).trim();
+}
+
+function tryGit(repo, args) {
+  try { return git(repo, args); } catch { return null; }
+}
+
+// Blob id of `file` in `treeish`, or null when absent.
+function blobIn(repo, treeish, file) {
+  const out = tryGit(repo, ['ls-tree', '-r', treeish, '--', file]);
+  const m = out && out.match(/^\d+ blob ([0-9a-f]+)\t/);
+  return m ? m[1] : null;
+}
+
+// Blob id the working-tree file would get if added now (same clean filters as the snapshot).
+function worktreeBlob(repo, file) {
+  return fs.existsSync(path.join(repo, file)) ? tryGit(repo, ['hash-object', '--', file]) : null;
+}
+
+function commitRecord(runId) {
+  return readJsonl(FILES.commits).find((c) => c.runId === runId) || null;
+}
+
+function suggestedMessage(run) {
+  const m = (run.lastMessage || '').match(/^[\s>*`-]*Commit:\s*`?([^`\r\n]+?)`?\s*$/im);
+  if (m) return m[1].trim();
+  const type = run.tag === 'fix' ? 'fix' : run.tag === 'refactor' ? 'refactor' : 'feat';
+  return `${type}: ${run.task.split('\n')[0].slice(0, 60)}`;
+}
+
+export function commitCheck(run) {
+  const result = { ok: false, files: [], problems: [], committed: commitRecord(run.id), suggestedMessage: suggestedMessage(run) };
+  if (result.committed) return { ...result, problems: ['이미 커밋한 실행입니다.'] };
+  if (!fs.existsSync(run.repo)) return { ...result, problems: ['저장소 경로가 없습니다.'] };
+  if (run.startTree === run.endTree) return { ...result, problems: ['이 실행에는 변경이 없습니다.'] };
+  for (const tree of [run.startTree, run.endTree]) {
+    if (tryGit(run.repo, ['cat-file', '-e', tree]) === null) return { ...result, problems: ['스냅샷이 Git에서 정리되어 확인할 수 없습니다.'] };
+  }
+  const gitDir = git(run.repo, ['rev-parse', '--absolute-git-dir']);
+  for (const marker of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
+    if (fs.existsSync(path.join(gitDir, marker))) result.problems.push(`진행 중인 Git 작업이 있습니다 (${marker}).`);
+  }
+  const paths = git(run.repo, ['diff', '--name-only', '--no-renames', run.startTree, run.endTree]).split('\n').filter(Boolean);
+  for (const file of paths) {
+    const want = blobIn(run.repo, run.endTree, file);
+    const start = blobIn(run.repo, run.startTree, file);
+    const head = blobIn(run.repo, 'HEAD', file);
+    const issue = worktreeBlob(run.repo, file) !== want ? '리뷰 이후 파일이 바뀌었습니다'
+      : head === want ? '이미 커밋된 상태입니다'
+        : start !== head ? 'run 전부터 커밋 안 된 변경이 있던 파일입니다'
+          : null;
+    result.files.push({ path: file, status: want === null ? 'D' : start === null ? 'A' : 'M', issue });
+  }
+  const blocked = result.files.filter((f) => f.issue);
+  if (blocked.length) result.problems.push(`${blocked.length}개 파일을 커밋할 수 없습니다. 터미널에서 직접 정리하세요.`);
+  result.ok = result.problems.length === 0;
+  return result;
+}
+
+function commitRun(run, message) {
+  const check = commitCheck(run);
+  if (!check.ok) return { ok: false, check };
+  const review = latestReviews().get(run.id);
+  if (review?.decision !== 'accepted') return { ok: false, check: { ...check, problems: ['수락한 실행만 커밋할 수 있습니다.'] } };
+  const paths = check.files.map((f) => f.path);
+  try {
+    git(run.repo, ['add', '-A', '--', ...paths]);
+    git(run.repo, ['commit', '-q', '-F', '-', '--', ...paths], `${message.trim()}\n\nJevcode-Run: ${run.id}\n`);
+  } catch (e) {
+    return { ok: false, check: { ...check, problems: [`git commit 실패: ${String(e.stderr || e.message).trim().slice(0, 500)}`] } };
+  }
+  const record = { runId: run.id, sha: git(run.repo, ['rev-parse', 'HEAD']), message: message.trim(), files: paths, at: new Date().toISOString() };
+  append(FILES.commits, record);
+  return { ok: true, commit: record };
+}
+
 function listRuns() {
   const reviews = latestReviews();
   const decisions = latestDecisions();
+  const commits = new Map(readJsonl(FILES.commits).map((c) => [c.runId, c]));
   return readJsonl(FILES.runs).reverse().map((r) => ({
     id: r.id,
     repo: path.basename(r.repo),
@@ -72,6 +161,7 @@ function listRuns() {
     denials: r.denials.length,
     usage: r.usage,
     review: reviews.get(r.id) || null,
+    commit: commits.get(r.id) || null,
     shadow: decisions.get(r.id) || {},
   }));
 }
@@ -158,6 +248,19 @@ export async function start() {
       if (req.method === 'GET' && url.pathname === '/api/meta') return send(res, 200, { causes: CAUSES, causeText: QUESTIONS.failure_cause.criteria });
       if (req.method === 'GET' && url.pathname === '/api/runs') return send(res, 200, listRuns());
       if (req.method === 'GET' && url.pathname === '/api/stats') return send(res, 200, stats());
+      const findRun = (id) => readJsonl(FILES.runs).find((r) => r.id === id);
+      if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'runs' && parts[3] === 'commit-check') {
+        const run = findRun(parts[2]);
+        return run ? send(res, 200, commitCheck(run)) : send(res, 404, { error: 'no run' });
+      }
+      if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'runs' && parts[3] === 'commit') {
+        const run = findRun(parts[2]);
+        if (!run) return send(res, 404, { error: 'no run' });
+        const body = await readBody(req);
+        const message = String(body.message || '').trim();
+        if (!message || message.length > 500) return send(res, 400, { error: '커밋 메시지가 비었거나 너무 깁니다.' });
+        return send(res, 200, commitRun(run, message));
+      }
       if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'runs' && parts[2]) {
         const detail = runDetail(parts[2]);
         return detail ? send(res, 200, detail) : send(res, 404, { error: 'no run' });
