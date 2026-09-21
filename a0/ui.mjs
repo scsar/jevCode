@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { CAUSES, QUESTIONS, evaluate } from './decisions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.join(process.env.LOCALAPPDATA, 'JevCode', 'a0');
+const ROOT = path.join(process.env.JEVCODE_HOME || path.join(process.env.LOCALAPPDATA, 'JevCode'), 'a0');
 const FILES = {
   runs: path.join(ROOT, 'runs.jsonl'),
   reviews: path.join(ROOT, 'reviews.jsonl'),

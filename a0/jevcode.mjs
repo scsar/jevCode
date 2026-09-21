@@ -22,13 +22,15 @@ import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.join(process.env.LOCALAPPDATA, 'JevCode', 'a0');
+// JEVCODE_HOME relocates all control data; tests must set it so real A0 records are never touched.
+const HOME = process.env.JEVCODE_HOME || path.join(process.env.LOCALAPPDATA, 'JevCode');
+const ROOT = path.join(HOME, 'a0');
 const RUNS = path.join(ROOT, 'runs.jsonl');
 const REVIEWS = path.join(ROOT, 'reviews.jsonl');
 const BYPASSES = path.join(ROOT, 'bypasses.jsonl');
 const DECISIONS = path.join(ROOT, 'decisions.jsonl');
 const CONFIG = path.join(ROOT, 'repos.json');
-const TEMP_ROOT = path.join(process.env.LOCALAPPDATA, 'JevCode', 'tmp');
+const TEMP_ROOT = path.join(HOME, 'tmp');
 const LAUNCHER_SRC = path.join(HERE, '..', 'spikes', 'a-gate', 'launcher', 'JobLauncher.cs');
 const LAUNCHER = path.join(HERE, 'out', 'JobLauncher.exe');
 const SANDBOX_MODE = 'unelevated';
