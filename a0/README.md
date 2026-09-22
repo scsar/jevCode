@@ -19,6 +19,8 @@ if (($user -split ';') -notcontains $bin) { [Environment]::SetEnvironmentVariabl
 
 PowerShell 프로필 방식은 Windows 보안의 "제어된 폴더 액세스"가 켜져 있으면 `Documents` 쓰기가 막혀 동작하지 않습니다.
 
+`bin`에는 `jevcode.ps1`과 `jevcode.cmd`가 함께 있습니다. PowerShell은 `.ps1`을 먼저 쓰고, 여러 줄짜리 작업 문구를 그대로 넘깁니다. **cmd.exe에서 `jevcode.cmd`를 쓰면 여러 줄 문구가 첫 줄바꿈에서 잘립니다.** cmd에서는 한 줄로 쓰거나 `--prompt-file`을 쓰세요. run을 시작할 때 받은 작업 문구의 길이와 끝부분이 출력되니, 잘렸는지 확인할 수 있습니다.
+
 ## 실행 한 번에 하는 일
 
 1. 저장소 잠금을 잡고 시작 snapshot을 만듭니다. snapshot은 임시 index로 만들어서 사용자의 index와 파일을 건드리지 않습니다.

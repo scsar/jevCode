@@ -394,6 +394,9 @@ async function cmdRun(argv) {
     const lastMessageFile = path.join(runDir, 'last-message.txt');
 
     console.log(`run ${id} in ${repo}${opts.tag ? ` [${opts.tag}]` : ''}`);
+    // Echo what actually arrived: cmd.exe silently drops everything after the first line break.
+    const tail = task.trim().slice(-50).replace(/\s+/g, ' ');
+    console.log(`  task: ${task.length}자, ${task.split('\n').length}줄, 끝: "...${tail}"`);
     let cancelled = false;
     let child = null;
     const onSigint = () => { cancelled = true; console.log('\n  cancelling...'); child?.kill(); };
