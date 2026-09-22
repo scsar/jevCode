@@ -281,7 +281,8 @@ interface TokenUsage {
 
 - **격리 등급이 다르다.** Windows의 Claude Code에는 A-gate로 검증한 OS 샌드박스가 없다. 대신 실행 수단을 모두 뺀다: `--restricted --tools Read Edit Write Glob Grep`(셸·코드 실행·웹 도구 제거, 사용자·프로젝트·로컬 설정 파일 무시, 파일 도구를 작업 폴더로 제한), `--strict-mcp-config`, `--no-session-persistence`, `--disable-slash-commands`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. 파일 도구의 폴더 제한은 앱 수준 제한이다. 검증은 run 뒤에 기존처럼 Codex OS 샌드박스에서 한다. 이 샌드박스는 Codex 한도와 무관하다.
 - **평가에서 분리한다.** 실행기와 격리 등급이 다르므로 10.2의 지표는 실행기별로 따로 본다. 기록의 `agent`, `isolation`, `fallbackFrom`, `autoFallback` 필드로 구분한다. 자동 거절 라벨(`source: auto`)은 사람 라벨이 아니므로, 설명 가능 비율 같은 사람 판단 지표에서는 뺀다.
-- **남은 일:** Claude를 `codex sandbox` 안에서 실행해 OS 격리와 셸(테스트 실행)을 함께 주는 방식은 A-gate식 확인(샌드박스 안에서 API 접속과 설정 폴더 쓰기가 되는지)을 거친 뒤 교체한다.
+- **남은 일:** Claude를 `codex sandbox` 안에서 실행해 OS 격리와 셸(테스트 실행)을 함께 주는 방식은 A-gate식 확인(샌드박스 안에서 API 접속과 설정 폴더 쓰기가 되는지)을 거친 뒤 교체한다. 단, 이 방식은 아래의 Codex CLI 의존을 더 깊게 만든다.
+- **Codex CLI 의존.** `codex sandbox`는 Codex 모델을 부르지 않는 로컬 격리 도구라 한도와 무관하지만, 격리 자체가 Codex CLI 프로그램에 기대고 있다. 대응: (1) run마다 Codex CLI 버전을 `codexVersion`으로 기록하고, A-gate 검증 버전(0.155.1)과 다르면 경고한다(`sandboxVerified`). 업데이트로 샌드박스가 조용히 바뀌는 것을 알아차리기 위해서다. (2) Codex CLI가 없으면 Claude run은 진행하되, 검증 명령을 격리 없이 돌리지 않고 `unknown`으로 기록한다(fail closed). (3) 장기적으로는 Codex CLI 없이 jevcode가 직접 격리하는 방식(제한 토큰, AppContainer, 이미 쓰는 Job Object 확장)을 v0.6 후보로 두고, 도입 시 A-gate를 다시 한다. "판단 제공자가 사라져도 방법이 유효해야 한다"는 원칙을 격리 계층에도 적용하는 것이다.
 
 ## 8. 검증과 완료 판정
 

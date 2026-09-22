@@ -193,11 +193,20 @@ function ensureLauncher() {
   if (r.status !== 0) die(`launcher build failed:\n${r.stdout}${r.stderr}`);
 }
 
+// Codex CLI is both an agent and the OS sandbox for verification (`codex sandbox`, local, no quota).
+// It may be missing: Claude runs then still start, but verification is not run unsandboxed.
 function codexExe() {
   const r = spawnSync('where.exe', ['codex'], { encoding: 'utf8' });
-  const exe = (r.stdout || '').split(/\r?\n/).find((l) => l.toLowerCase().endsWith('.exe'));
-  if (!exe) die('codex.exe not found on PATH');
-  return exe;
+  return (r.stdout || '').split(/\r?\n/).find((l) => l.toLowerCase().endsWith('.exe')) || null;
+}
+
+// The sandbox was verified by A-gate on this version (spikes/a-gate/README.md). Another version may
+// behave differently without any error, so it is recorded per run and warned about.
+const VERIFIED_CODEX = '0.155.1';
+function codexVersion(codex) {
+  if (!codex) return null;
+  const r = spawnSync(codex, ['--version'], { encoding: 'utf8', timeout: 20000 });
+  return ((r.stdout || '').match(/(\d+\.\d+\.\d+[\w.-]*)/) || [])[1] || null;
 }
 
 // jevcode-run (design 5.2): TOML literal strings keep backslashes; read denies need elevated.
@@ -620,10 +629,15 @@ function newRunId() {
 }
 
 // Which agent starts: --agent wins; otherwise Codex unless its last usage limit has not reset yet.
-function chooseAgent(opts) {
+function chooseAgent(opts, codex) {
   if (opts.agent) {
     if (!['codex', 'claude'].includes(opts.agent)) die('--agent takes codex or claude');
+    if (opts.agent === 'codex' && !codex) die('codex.exe not found on PATH');
     return { agent: opts.agent, why: '--agent' };
+  }
+  if (!codex) {
+    if (!claudeExe()) die('codex.exe와 claude.exe를 모두 찾지 못했습니다.');
+    return { agent: 'claude', why: 'Codex CLI 없음' };
   }
   const codexLimit = quotaActive('codex');
   if (!codexLimit) return { agent: 'codex', why: null };
@@ -647,6 +661,9 @@ async function cmdRun(argv) {
 
   ensureLauncher();
   const codex = codexExe(); // also runs verification (codex sandbox), which needs no Codex quota
+  const codexVer = codexVersion(codex);
+  if (!codex) console.log('  ! Codex CLI 없음: 검증 명령을 격리 없이 돌리지 않으므로 검증은 unknown으로 기록됩니다.');
+  else if (codexVer !== VERIFIED_CODEX) console.log(`  ! Codex CLI ${codexVer || '버전 알 수 없음'}: A-gate 검증 버전(${VERIFIED_CODEX})과 다릅니다. 샌드박스 동작이 바뀌었을 수 있으니 A-gate를 다시 확인하세요.`);
   // A task identical to one rejected for the agent's work (an old command pasted again) stops here
   // unless --allow-rejected; operational rejections (quota, timeout, ...) are meant to be rerun as-is.
   const twins = rejectedTwins({ root: ROOT, runs: readJsonl(RUNS), reviews: new Map(readJsonl(REVIEWS).map((v) => [v.id, v])), repo, task });
@@ -663,12 +680,12 @@ async function cmdRun(argv) {
     console.error('  그대로 진행하려면 --allow-pending (다음 run이 남은 파일 위에 쌓이고, 커밋이 막힐 수 있습니다)');
     process.exit(1);
   }
-  let { agent, why } = chooseAgent(opts);
+  let { agent, why } = chooseAgent(opts, codex);
   const release = acquireLock(repo, 'run');
   try {
     let fallbackFrom = null;
     for (;;) {
-      const out = await executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex });
+      const out = await executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex, codexVer });
       if (!out.fallback) break;
       ({ agent, why, fallbackFrom } = { agent: 'claude', why: `Codex가 run 도중 한도 도달 (${out.id})`, fallbackFrom: out.id });
     }
@@ -679,7 +696,7 @@ async function cmdRun(argv) {
 
 // One agent run: snapshot, execute, record, verify, shadow. Returns { fallback: true } when Codex
 // stopped on its usage limit and the tree was restored so Claude can take the same task.
-async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex }) {
+async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex, codexVer }) {
   const id = newRunId();
   const runDir = path.join(ROOT, 'runs', id);
   const runTemp = path.join(TEMP_ROOT, id);
@@ -764,7 +781,10 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, tim
     let verifiedTreeChanged = false;
     if (!autoFallback && cfg.verify.length && !cancelled && executionOutcome !== 'unknown') {
       console.log(`  verifying (${cfg.verify.length} command${cfg.verify.length > 1 ? 's' : ''})...`);
-      verification = await runVerification({ repo, runDir, runTemp, env, commands: cfg.verify, timeoutMs, codex });
+      // Without the sandbox the agent's code would run unprotected on the host: fail closed.
+      verification = codex
+        ? await runVerification({ repo, runDir, runTemp, env, commands: cfg.verify, timeoutMs, codex })
+        : cfg.verify.map((command) => ({ command, status: 'unknown', exitCode: null, durationMs: 0, reason: 'no codex sandbox; not run unsandboxed', tail: '' }));
       verificationStatus = verification.every((v) => v.status === 'passed') ? 'passed'
         : verification.some((v) => v.status === 'unknown') ? 'unknown' : 'failed';
       verifiedTreeChanged = snapshotTree(repo, runDir) !== endTree;
@@ -783,6 +803,7 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, tim
     const record = {
       id, repo, tag: opts.tag || null, task: task.slice(0, 2000),
       agent, isolation: agent === 'claude' ? CLAUDE_ISOLATION : `codex os sandbox (${SANDBOX_MODE})`,
+      codexVersion: codexVer, sandboxVerified: codexVer === VERIFIED_CODEX,
       model: (agent === 'claude' ? opts['claude-model'] || process.env.JEVCODE_CLAUDE_MODEL : opts.model) || null,
       ...(fallbackFrom ? { fallbackFrom } : {}),
       startedAt: new Date(t0).toISOString(),
