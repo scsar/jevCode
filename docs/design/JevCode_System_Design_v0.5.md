@@ -193,7 +193,7 @@ B 착수 전에 각 도구를 끄거나, 경계를 넘지 못함을 검증하거
 
 ### 5.5 보호 경로
 
-- **Git 메타데이터는 불변 경계다.** `.git` 쓰기는 `:workspace` 계열 프로필이 OS 수준에서 막는다(A-gate G2: commit, update-ref, refs/config/HEAD 직접 쓰기 모두 차단). 시작·종료 시 HEAD, refs, index, config 지문을 비교해 이중 확인한다.
+- **Git 메타데이터는 불변 경계다.** `.git` 쓰기는 `:workspace` 계열 프로필이 OS 수준에서 막는다(A-gate G2: commit, update-ref, refs/config/HEAD 직접 쓰기 모두 차단). 시작·종료 시 HEAD, refs, index, config 지문을 비교해 이중 확인한다. index는 파일 바이트가 아니라 **항목 내용(`git ls-files --stage`)**으로 비교한다. 사람이나 에디터가 `git status`를 실행하면 index의 stat 캐시만 다시 쓰여 바이트가 바뀌기 때문이다. 이 수정 전의 run `20260922-120718-1f7f`(T4 retry)는 run 도중 `git status` 때문에 `policyStatus=violated`가 기록된 **오탐**이며, 정책 위반 지표에서 제외한다.
 - **제어 디렉터리**는 `%LOCALAPPDATA%\JevCode`에 두고 `jevcode-run` 프로필에서 deny한다.
 - push·배포·외부 메시지 전송은 지원 범위에서 제외한다. 명령 네트워크 차단은 A-gate GN에서 확인됐다.
 

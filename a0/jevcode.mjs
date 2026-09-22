@@ -142,6 +142,9 @@ function snapshotTree(repo, runDir) {
   return tree;
 }
 
+// Index *entries* (mode, blob, stage, path), not the index file's bytes: `git status` from the user
+// or an editor rewrites cached stat data in .git/index without changing anything, which made runs
+// look like policy violations.
 function gitFingerprint(repo) {
   const gitDir = git(repo, ['rev-parse', '--absolute-git-dir']);
   const hash = (f) => (fs.existsSync(f) ? sha1(fs.readFileSync(f)) : 'none');
@@ -149,7 +152,7 @@ function gitFingerprint(repo) {
     tryGit(repo, ['rev-parse', 'HEAD']),
     tryGit(repo, ['for-each-ref', '--format=%(refname) %(objectname)']),
     hash(path.join(gitDir, 'HEAD')),
-    hash(path.join(gitDir, 'index')),
+    sha1(tryGit(repo, ['ls-files', '--stage']) ?? 'none'),
     hash(path.join(gitDir, 'config')),
   ].join('|'));
 }
