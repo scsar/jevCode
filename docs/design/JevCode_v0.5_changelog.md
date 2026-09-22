@@ -26,4 +26,4 @@ v0.2는 Jev를 MVP 의존성에서 빼고 후속 shadow 실험으로 두었다. 
 
 - Jev API: `POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer`, 요청은 `state` + `questions`(noul / choice / score), 응답은 질문별 답 + `probabilities` + `confidence` ([Quick start](https://docs.typesafe.ai/introduction/quickstart)).
 - 가짜 키로 호출하면 실제 엔드포인트가 `401 authentication_error`를 반환한다. 이 오류는 `decisions.jsonl`에 기록되고 실행에는 영향이 없다.
-- choice와 score의 `criteria` 형식(객체 / 배열)은 문서 예시에서 추정한 것이다. 실제 키로 첫 호출할 때 확인한다.
+- choice와 score의 `criteria` 형식(객체 / 배열)은 문서 예시에서 추정한 것이었다. 2026-09-22 실제 키로 첫 호출해 그대로 동작함을 확인했다(`jev-1.13.0`).

@@ -310,7 +310,7 @@ MVP 지표: 실행 시간, 검증 시간, 런타임 자체 시간, 실패 이유
 - **판단 제공자 인터페이스:** `decide({record, state}) -> {질문 id: {value, probabilities?, confidence?}}`. 구현: `a0/decisions.mjs`.
 - **제공자:**
   - `rules`: JevCode가 이미 가진 사실(실행 결과, 검증, 정책, 거부, delta 크기)을 고정 규칙으로 답하는 기준선. 모델은 이 기준선을 넘어야 의미가 있다.
-  - `jev`: TypeSafe Jev (`POST https://api.typesafe.ai/v1/systemone`, `model: jev-latest`). `TYPESAFE_API_KEY`가 있을 때만 호출하며, 이것이 명시적 opt-in이다. 가짜 키로 호출했을 때 실제 엔드포인트가 401을 반환해 주소와 오류 처리가 동작함을 확인했다(2026-09-21).
+  - `jev`: TypeSafe Jev (`POST https://api.typesafe.ai/v1/systemone`, `model: jev-latest`). `TYPESAFE_API_KEY`가 있을 때만 호출하며, 이것이 명시적 opt-in이다. 가짜 키로 호출했을 때 실제 엔드포인트가 401을 반환해 주소와 오류 처리가 동작함을 확인했다(2026-09-21). 실제 키로 첫 호출에 성공했다(2026-09-22, `jev-1.13.0`, 726ms). choice의 `criteria` 객체와 score의 `criteria` 배열이 그대로 받아들여졌다. score는 연속값과 등급별 확률, choice는 7개 선택지 전부의 확률, noul은 확률 하나를 반환한다. E4(오류율)를 집계할 때는 키 설정 실수로 난 첫 401 두 건을 운영 오류에서 제외한다.
   - 이후 다른 판단 모델이나 구조화 출력 LLM도 같은 인터페이스로 추가해 비교할 수 있다.
 - **질문 세트 v1** (버전이 바뀌면 이전 답과 섞어 평가하지 않음):
 
