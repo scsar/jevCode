@@ -141,9 +141,20 @@ jevcode decide --all --provider jev          # 키가 없던 기간의 실행을
 | 전환 실험 | H 착수만 결정 |
 | Jev 방법 검증 | 설계 v0.5 10.2 |
 
+## Codex 한도 → Claude 자동 전환
+
+Codex 사용 한도가 걸리면 같은 명령을 Claude Code(`claude -p`)로 실행합니다.
+
+- **시작 전:** 마지막으로 기록된 Codex 한도가 아직 풀리지 않았으면(`quota.json`) 처음부터 Claude로 시작합니다. 출력에 `agent: claude ← Codex 한도 21:53까지`처럼 표시됩니다.
+- **작업 도중:** Codex가 한도 메시지와 함께 멈추면 반쯤 된 변경을 run 전 상태로 자동으로 되돌리고, 같은 명령을 Claude로 이어서 실행합니다. 끊긴 run은 **자동 거절**(`quota_or_rate_limit`, `source: auto`)과 자동 되돌리기로 기록되고, 새 run에는 `fallbackFrom`이 붙습니다. 되돌린 뒤 작업 트리가 run 전과 다르면 넘기지 않고 멈춥니다.
+- **한도가 풀리는 시각:** Codex 메시지의 "try again at 9:53 PM"을 읽습니다. 못 읽으면 1시간 뒤로 둡니다. Claude는 `rate_limit_event`의 `resetsAt`을 씁니다. 둘 다 한도 상태면 시작하지 않습니다.
+- **Claude run의 격리는 Codex보다 약합니다.** Windows에서는 Claude에 OS 샌드박스가 없습니다. 그래서 **실행 도구를 전혀 주지 않습니다.** `--restricted --tools Read Edit Write Glob Grep`(셸·웹 없음, 사용자·프로젝트 설정 무시, 파일 도구는 작업 폴더로 제한), `--strict-mcp-config`, `--no-session-persistence`, `--disable-slash-commands`, 자동 메모리 끔. 에이전트가 작업 중에 테스트를 돌릴 수 없고, 검증은 run이 끝난 뒤 jevcode가 Codex 샌드박스(한도와 무관)에서 한 번 합니다.
+- **옵션:** `--agent codex|claude`로 강제(강제하면 자동 전환 안 함), `--no-fallback`으로 도중 전환 끄기, `--claude-model <모델>` 또는 환경 변수 `JEVCODE_CLAUDE_MODEL`(없으면 Claude Code 기본 모델).
+- **평가:** 실행기가 다르고 격리도 다르므로 Claude run은 Codex run과 **따로 봅니다.** `jevcode stats`에 실행기별 개수가 나오고, 리뷰 화면에 실행기와 자동 전환 여부가 표시됩니다.
+
 ## 격리 조건과 알려진 빈틈
 
-- **격리:** `codex-win-unelevated` + `jevcode-run` 프로필(A-gate 2차 PASS-WITH-GAPS)
+- **격리:** `codex-win-unelevated` + `jevcode-run` 프로필(A-gate 2차 PASS-WITH-GAPS). Claude 전환 run은 OS 샌드박스 없이 실행 도구를 빼는 방식이라 더 약합니다(위 섹션).
 - **hermetic 옵션:** web search, memories, apps, 하위 에이전트, 원격 플러그인, 훅을 끄고, 사용자·시스템 스킬은 `SKILL.md`마다 끕니다.
 - **알려진 빈틈:**
   - 실행기가 제어 디렉터리를 읽을 수 있습니다(G1.4, elevated 전용).

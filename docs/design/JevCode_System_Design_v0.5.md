@@ -277,6 +277,12 @@ interface TokenUsage {
 - **거부된 동작이 이벤트 스트림에 나타나지 않을 수 있다.** A-gate에서 거부된 `apply_patch`는 JSONL 이벤트에 없고 stderr 로그(`codex_core::tools::router: ... patch rejected`)에만 남았다. 어댑터는 stdout 이벤트와 stderr 로그를 모두 소비하고, stderr에서 확인된 거부를 `approval_denied`로 정규화한다.
 - 실행기가 보고한 테스트 성공은 `source=provider` 주장이며 런타임 검증과 구분한다. 알 수 없는 이벤트는 이름과 제한된 진단 정보를 남기고 계속 처리한다.
 
+**Claude 어댑터와 한도 전환 (2026-09-22, A0 중 추가):** Codex 사용 한도에 걸리면 같은 명령을 Claude Code(`claude -p --output-format stream-json`)로 실행한다. 시작 전에 기록된 한도가 남아 있으면 처음부터 Claude로 시작하고, 도중에 걸리면 작업 트리를 시작 스냅샷으로 되돌린 뒤 넘긴다(되돌린 트리가 시작 스냅샷과 다르면 넘기지 않는다). 끊긴 run은 사람 라벨과 구분되는 자동 거절(`quota_or_rate_limit`, `source: auto`)로 남긴다.
+
+- **격리 등급이 다르다.** Windows의 Claude Code에는 A-gate로 검증한 OS 샌드박스가 없다. 대신 실행 수단을 모두 뺀다: `--restricted --tools Read Edit Write Glob Grep`(셸·코드 실행·웹 도구 제거, 사용자·프로젝트·로컬 설정 파일 무시, 파일 도구를 작업 폴더로 제한), `--strict-mcp-config`, `--no-session-persistence`, `--disable-slash-commands`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. 파일 도구의 폴더 제한은 앱 수준 제한이다. 검증은 run 뒤에 기존처럼 Codex OS 샌드박스에서 한다. 이 샌드박스는 Codex 한도와 무관하다.
+- **평가에서 분리한다.** 실행기와 격리 등급이 다르므로 10.2의 지표는 실행기별로 따로 본다. 기록의 `agent`, `isolation`, `fallbackFrom`, `autoFallback` 필드로 구분한다. 자동 거절 라벨(`source: auto`)은 사람 라벨이 아니므로, 설명 가능 비율 같은 사람 판단 지표에서는 뺀다.
+- **남은 일:** Claude를 `codex sandbox` 안에서 실행해 OS 격리와 셸(테스트 실행)을 함께 주는 방식은 A-gate식 확인(샌드박스 안에서 API 접속과 설정 폴더 쓰기가 되는지)을 거친 뒤 교체한다.
+
 ## 8. 검증과 완료 판정
 
 검증 명령은 executable·args·cwd로 설정하고 `codex sandbox -P jevcode-run -C <workspace>`로 JobLauncher 아래에서 실행한다(A-gate 1계층에서 이 경로의 쓰기 거부·네트워크 차단·Job containment 확인).

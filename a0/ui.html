@@ -365,6 +365,7 @@ async function openRun(id) {
       <div class="row">${badge(OUTCOME[run.executionOutcome] || [run.executionOutcome, 'b-muted'])}${badge(VERIFY[run.verificationStatus] || [run.verificationStatus, 'b-muted'])}
         ${badge(run.policyStatus === 'clean' ? ['정책 정상', 'b-ok'] : ['정책 ' + run.policyStatus, 'b-bad'])}
         <span class="pill">${esc(run.repo)}</span>${run.tag ? `<span class="pill">#${esc(run.tag)}</span>` : ''}</div>
+      <div class="row"><span class="label">실행기</span>${esc(run.agent || 'codex')}${run.agent === 'claude' ? ' <span class="hint">(파일 도구만, 셸·웹 없음, OS 샌드박스 없음)</span>' : ''}${run.fallbackFrom ? ` <span class="hint">← Codex 한도로 자동 전환 (${esc(run.fallbackFrom)})</span>` : ''}${run.autoFallback ? ' <span class="hint">→ 한도로 중단, 자동으로 되돌리고 Claude로 재실행</span>' : ''}</div>
       <div class="row"><span class="label">시간</span>실행 ${secs(run.durations.execMs)} · 검증 ${secs(run.durations.verifyMs)} · ${esc(when(run.startedAt))}</div>
       <div class="row"><span class="label">토큰</span>${u ? `입력 ${num(u.input)} (캐시 ${num(u.cachedInput)}) · 출력 ${num(u.output)}` : '-'}</div>
       ${run.quotaSignalCandidates?.length ? `<div class="row"><span class="label">한도 신호?</span><pre>${esc(run.quotaSignalCandidates.join('\n'))}</pre></div>` : ''}

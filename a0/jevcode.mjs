@@ -7,7 +7,8 @@
 // providers (decisions.mjs) about the run. No dependencies, Windows only.
 //
 //   jevcode init --verify "npm test" [--verify ...] [--timeout-min 30]
-//   jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] [--allow-pending] [--allow-rejected] "task"
+//   jevcode run [--tag t] [--agent codex|claude] [--model m] [--claude-model m] [--timeout-min n]
+//               [--prompt-file f] [--no-fallback] [--allow-pending] [--allow-rejected] "task"
 //   jevcode log [n] | show <id> | stats | eval
 //   jevcode review <id> accept|reject [--cause <cause>] [--explainable yes|no] [reason]
 //   jevcode ui                      (local review screen, see ui.mjs)
@@ -36,6 +37,8 @@ const DECISIONS = path.join(ROOT, 'decisions.jsonl');
 const COMMITS = path.join(ROOT, 'commits.jsonl');
 const REVERTS = path.join(ROOT, 'reverts.jsonl');
 const CONFIG = path.join(ROOT, 'repos.json');
+// Last known usage-limit state per agent, so the next run can start on the other agent.
+const QUOTA = path.join(ROOT, 'quota.json');
 const TEMP_ROOT = path.join(HOME, 'tmp');
 const LAUNCHER_SRC = path.join(HERE, '..', 'spikes', 'a-gate', 'launcher', 'JobLauncher.cs');
 const LAUNCHER = path.join(HERE, 'out', 'JobLauncher.exe');
@@ -228,15 +231,133 @@ const HERMETIC = [
   '-c', 'features.hooks=false', '-c', 'features.skill_mcp_dependency_install=false',
 ];
 
+function claudeExe() {
+  const r = spawnSync('where.exe', ['claude'], { encoding: 'utf8' });
+  return (r.stdout || '').split(/\r?\n/).find((l) => l.toLowerCase().endsWith('.exe')) || null;
+}
+
+// Claude Code has no OS sandbox on Windows, so the Claude run gets no way to execute anything:
+// --restricted drops the shell/code/web tools, ignores user, project and local settings files (so no
+// user plugins, hooks or permission rules) and confines the file tools to the working directory;
+// --tools narrows it to the five file tools. MCP, skills, session files and auto memory are off.
+// Verification still runs afterwards inside the Codex OS sandbox, which needs no Codex quota.
+// The repo's CLAUDE.md/AGENTS.md are still read, as AGENTS.md is for Codex.
+const CLAUDE_ISOLATION = 'claude-restricted (file tools only, no shell/web; no OS sandbox)';
+function claudeCommand(claude, model) {
+  return [claude, '-p', '--output-format', 'stream-json', '--verbose',
+    '--restricted', '--tools', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+    '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands',
+    '--permission-mode', 'acceptEdits', ...(model ? ['--model', model] : [])];
+}
+
+// Same shape as summarizeEvents, from `claude -p --output-format stream-json` lines.
+function summarizeClaudeEvents(eventsText, stderrText) {
+  const s = { turnCompleted: false, usage: null, commands: [], messages: [], errors: [], denials: [], quotaCandidates: [], tools: [], result: null, rateLimit: null };
+  for (const line of eventsText.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.type === 'assistant') {
+      for (const c of e.message?.content || []) {
+        if (c.type === 'tool_use') s.tools.push({ name: c.name, target: String(c.input?.file_path || c.input?.pattern || c.input?.path || '').slice(0, 200) });
+        else if (c.type === 'text' && c.text) s.messages.push(c.text);
+      }
+    } else if (e.type === 'rate_limit_event') {
+      s.rateLimit = e.rate_limit_info || null;
+      if (s.rateLimit && s.rateLimit.status !== 'allowed') s.quotaCandidates.push(`rate_limit_event: ${JSON.stringify(s.rateLimit).slice(0, 280)}`);
+    } else if (e.type === 'result') {
+      s.result = e;
+      s.turnCompleted = e.subtype === 'success' && !e.is_error;
+      const u = e.usage || {};
+      s.usage = {
+        input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+        cachedInput: u.cache_read_input_tokens || 0, output: u.output_tokens || 0,
+        reasoningOutput: u.output_tokens_details?.thinking_tokens || 0,
+      };
+      if (e.is_error) {
+        const msg = String(e.result || e.subtype || 'error').slice(0, 300);
+        s.errors.push(msg);
+        if (QUOTA_HINT.test(msg)) s.quotaCandidates.push(msg);
+      }
+      for (const d of e.permission_denials || []) s.denials.push({ via: 'permission', detail: `${d.tool_name} ${JSON.stringify(d.tool_input || {}).slice(0, 200)}` });
+    }
+  }
+  for (const line of stderrText.split('\n')) {
+    if (QUOTA_HINT.test(line) && s.quotaCandidates.length < 5) s.quotaCandidates.push(line.trim().slice(0, 300));
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------- usage limits and agent choice
+
+function readQuota() {
+  try { return JSON.parse(fs.readFileSync(QUOTA, 'utf8')); } catch { return {}; }
+}
+
+// "try again at 9:53 PM" (Codex) or a reset epoch (Claude rate_limit_event); otherwise one hour.
+function quotaResetAt(messages, rateLimit, at) {
+  if (rateLimit?.resetsAt) return new Date(rateLimit.resetsAt * 1000);
+  for (const m of messages) {
+    const t = String(m).match(/try again at (\d{1,2}):(\d{2})\s*([AP]M)?/i);
+    if (t) {
+      const ampm = (t[3] || '').toUpperCase();
+      const h = ampm ? (+t[1] % 12) + (ampm === 'PM' ? 12 : 0) : +t[1];
+      const d = new Date(at);
+      d.setHours(h, +t[2], 0, 0);
+      if (d <= at) d.setDate(d.getDate() + 1);
+      return d;
+    }
+    const rel = String(m).match(/try again in (\d+)\s*(minute|hour)/i);
+    if (rel) return new Date(at.getTime() + +rel[1] * (/hour/i.test(rel[2]) ? 3600e3 : 60e3));
+  }
+  return new Date(at.getTime() + 3600e3);
+}
+
+function markQuota(agent, runId, messages, rateLimit) {
+  const q = readQuota();
+  const at = new Date();
+  q[agent] = { until: quotaResetAt(messages, rateLimit, at).toISOString(), runId, at: at.toISOString(), message: String(messages[0] || '').slice(0, 300) };
+  fs.mkdirSync(ROOT, { recursive: true });
+  fs.writeFileSync(QUOTA, JSON.stringify(q, null, 2));
+  return q[agent];
+}
+
+function quotaActive(agent) {
+  const q = readQuota()[agent];
+  return q && new Date(q.until) > new Date() ? q : null;
+}
+
+const hhmm = (iso) => new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+// Undo a run that stopped on a usage limit so the fallback run starts from the same tree. The lock
+// is still held, so nothing else changed the files. Returns null when the tree could not be matched.
+function restoreToTree(repo, runDir, tree) {
+  const now = snapshotTree(repo, runDir);
+  const lines = tryGit(repo, ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-renames', tree, now]).split('\n').filter(Boolean);
+  const restored = [];
+  const removed = [];
+  for (const line of lines) {
+    const [status, file] = line.split('\t');
+    if (status === 'A') { fs.rmSync(path.join(repo, file), { force: true }); removed.push(file); continue; }
+    git(repo, ['restore', `--source=${tree}`, '--worktree', '--', file], { GIT_LITERAL_PATHSPECS: '1' });
+    restored.push(file);
+  }
+  // Same index-stat refresh as the UI revert: only for files whose content matches the index blob.
+  for (const file of restored) {
+    const staged = tryGit(repo, ['ls-files', '-s', '--', file]).split(/\s+/)[1];
+    if (staged && staged === tryGit(repo, ['hash-object', '--', file])) tryGit(repo, ['update-index', '--', file]);
+  }
+  return snapshotTree(repo, runDir) === tree ? { restored, removed } : null;
+}
+
 // Runs `command` inside a fresh Job Object; resolves with the launcher's final state.
-function launch({ stateFile, timeoutMs, command, stdinFile, stdoutFile, stderrFile, env, onSpawn }) {
+function launch({ stateFile, timeoutMs, command, stdinFile, stdoutFile, stderrFile, env, cwd, onSpawn }) {
   const stdio = [
     stdinFile ? fs.openSync(stdinFile, 'r') : 'ignore',
     fs.openSync(stdoutFile, 'w'),
     fs.openSync(stderrFile, 'w'),
   ];
   const child = spawn(LAUNCHER, [stateFile, String(timeoutMs), String(LINGER_MS), '--', ...command], {
-    stdio, env, windowsHide: true,
+    stdio, env, cwd, windowsHide: true,
   });
   onSpawn?.(child);
   return new Promise((resolve) => {
@@ -294,7 +415,7 @@ function summarizeEvents(eventsText, stderrText) {
 }
 
 // Live progress: tail the events file and print completed commands / messages.
-function followEvents(file) {
+function followEvents(file, agent = 'codex') {
   let offset = 0;
   let partial = '';
   const tick = () => {
@@ -311,6 +432,13 @@ function followEvents(file) {
     for (const line of lines) {
       let e;
       try { e = JSON.parse(line); } catch { continue; }
+      if (agent === 'claude') {
+        for (const c of (e.type === 'assistant' && e.message?.content) || []) {
+          if (c.type === 'tool_use') console.log(`  · ${c.name} ${path.basename(String(c.input?.file_path || c.input?.pattern || c.input?.path || ''))}`.slice(0, 120));
+          else if (c.type === 'text' && c.text?.trim()) console.log(`  > ${c.text.trim().split('\n')[0].slice(0, 110)}`);
+        }
+        continue;
+      }
       if (e.type !== 'item.completed' || !e.item) continue;
       if (e.item.type === 'command_execution') {
         console.log(`  $ ${shortCommand(e.item.command).slice(0, 110)}  -> exit ${e.item.exit_code}`);
@@ -485,25 +613,40 @@ function cmdInit(argv) {
   console.log(`configured ${repo}\n  verify: ${(opts.verify || []).join(' | ') || '(none)'}\n  unity check: ${opts.unity ? 'on (host-side recompile + console after each run)' : 'off'}\n  timeout: ${config[repoKey(repo)].timeoutMin} min`);
 }
 
+function newRunId() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${crypto.randomBytes(2).toString('hex')}`;
+}
+
+// Which agent starts: --agent wins; otherwise Codex unless its last usage limit has not reset yet.
+function chooseAgent(opts) {
+  if (opts.agent) {
+    if (!['codex', 'claude'].includes(opts.agent)) die('--agent takes codex or claude');
+    return { agent: opts.agent, why: '--agent' };
+  }
+  const codexLimit = quotaActive('codex');
+  if (!codexLimit) return { agent: 'codex', why: null };
+  const claudeLimit = quotaActive('claude');
+  if (claudeLimit) die(`Codex와 Claude 모두 사용 한도 상태입니다 (Codex ${hhmm(codexLimit.until)}, Claude ${hhmm(claudeLimit.until)}까지). 그 뒤에 다시 실행하세요.`);
+  if (!claudeExe()) die(`Codex가 ${hhmm(codexLimit.until)}까지 사용 한도 상태인데 claude.exe를 찾지 못했습니다.`);
+  return { agent: 'claude', why: `Codex 한도 ${hhmm(codexLimit.until)}까지` };
+}
+
 async function cmdRun(argv) {
-  const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value', 'allow-pending': 'bool', 'allow-rejected': 'bool' });
+  const { opts, rest } = parseArgs(argv, {
+    tag: 'value', model: 'value', 'claude-model': 'value', agent: 'value', 'timeout-min': 'value', 'prompt-file': 'value',
+    'allow-pending': 'bool', 'allow-rejected': 'bool', 'no-fallback': 'bool',
+  });
   const task = opts['prompt-file'] ? fs.readFileSync(opts['prompt-file'], 'utf8') : rest.join(' ');
-  if (!task.trim()) die('usage: jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] [--allow-pending] [--allow-rejected] "task"');
+  if (!task.trim()) die('usage: jevcode run [--tag t] [--agent codex|claude] [--model m] [--claude-model m] [--timeout-min n] [--prompt-file f] [--no-fallback] [--allow-pending] [--allow-rejected] "task"');
 
   const repo = repoRoot();
   const cfg = readConfig()[repoKey(repo)] || { verify: [], timeoutMin: 30 };
   const timeoutMs = +(opts['timeout-min'] || cfg.timeoutMin) * 60000;
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const id = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${crypto.randomBytes(2).toString('hex')}`;
-  const runDir = path.join(ROOT, 'runs', id);
-  const runTemp = path.join(TEMP_ROOT, id);
-  const stateDir = path.join(runDir, 'codex-state');
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.mkdirSync(runTemp, { recursive: true });
 
   ensureLauncher();
-  const codex = codexExe();
+  const codex = codexExe(); // also runs verification (codex sandbox), which needs no Codex quota
   // A task identical to one rejected for the agent's work (an old command pasted again) stops here
   // unless --allow-rejected; operational rejections (quota, timeout, ...) are meant to be rerun as-is.
   const twins = rejectedTwins({ root: ROOT, runs: readJsonl(RUNS), reviews: new Map(readJsonl(REVIEWS).map((v) => [v.id, v])), repo, task });
@@ -511,8 +654,6 @@ async function cmdRun(argv) {
     console.error('jevcode: 이 명령은 이전에 거절된 run과 글자까지 같습니다. 예전 명령을 다시 붙여 넣은 것 아닌지 확인하세요.');
     for (const t of twins) console.error(`  ${t.id}  거절 (${t.cause || '-'})${t.reason ? `: ${t.reason.replace(/\s+/g, ' ').slice(0, 120)}` : ''}`);
     console.error('  같은 명령을 일부러 다시 돌리려면 --allow-rejected');
-    fs.rmSync(runDir, { recursive: true, force: true });
-    fs.rmSync(runTemp, { recursive: true, force: true });
     process.exit(1);
   }
   const pending = pendingRuns(repo);
@@ -520,12 +661,32 @@ async function cmdRun(argv) {
     console.error('jevcode: 정리되지 않은 run이 있습니다. 리뷰 화면(jevcode ui)에서 먼저 처리하세요.');
     for (const p of pending) console.error(`  ${p.id}  → ${p.need}${p.files ? ` (파일 ${p.files}개)` : ''}`);
     console.error('  그대로 진행하려면 --allow-pending (다음 run이 남은 파일 위에 쌓이고, 커밋이 막힐 수 있습니다)');
-    fs.rmSync(runDir, { recursive: true, force: true });
-    fs.rmSync(runTemp, { recursive: true, force: true });
     process.exit(1);
   }
-  const release = acquireLock(repo, id);
-  const env = { ...process.env, TEMP: runTemp, TMP: runTemp };
+  let { agent, why } = chooseAgent(opts);
+  const release = acquireLock(repo, 'run');
+  try {
+    let fallbackFrom = null;
+    for (;;) {
+      const out = await executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex });
+      if (!out.fallback) break;
+      ({ agent, why, fallbackFrom } = { agent: 'claude', why: `Codex가 run 도중 한도 도달 (${out.id})`, fallbackFrom: out.id });
+    }
+  } finally {
+    release();
+  }
+}
+
+// One agent run: snapshot, execute, record, verify, shadow. Returns { fallback: true } when Codex
+// stopped on its usage limit and the tree was restored so Claude can take the same task.
+async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex }) {
+  const id = newRunId();
+  const runDir = path.join(ROOT, 'runs', id);
+  const runTemp = path.join(TEMP_ROOT, id);
+  const stateDir = path.join(runDir, 'codex-state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(runTemp, { recursive: true });
+  const env = { ...process.env, TEMP: runTemp, TMP: runTemp, ...(agent === 'claude' ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } : {}) };
   const t0 = Date.now();
 
   try {
@@ -538,6 +699,7 @@ async function cmdRun(argv) {
     const lastMessageFile = path.join(runDir, 'last-message.txt');
 
     console.log(`run ${id} in ${repo}${opts.tag ? ` [${opts.tag}]` : ''}`);
+    console.log(`  agent: ${agent}${agent === 'claude' ? ' (파일 도구만, 셸·웹 없음)' : ''}${why ? `  ← ${why}` : ''}`);
     // Echo what actually arrived: cmd.exe silently drops everything after the first line break.
     const tail = task.trim().slice(-50).replace(/\s+/g, ' ');
     console.log(`  task: ${task.length}자, ${task.split('\n').length}줄, 끝: "...${tail}"`);
@@ -547,33 +709,37 @@ async function cmdRun(argv) {
     let child = null;
     const onSigint = () => { cancelled = true; console.log('\n  cancelling...'); child?.kill(); };
     process.on('SIGINT', onSigint);
-    const stopFollow = followEvents(eventsFile);
+    const stopFollow = followEvents(eventsFile, agent);
     const tExec = Date.now();
-    const { state } = await launch({
-      stateFile: path.join(runDir, 'launcher.json'),
-      timeoutMs,
-      command: [codex, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
+    const command = agent === 'claude'
+      ? claudeCommand(claudeExe() || die('claude.exe not found on PATH'), opts['claude-model'] || process.env.JEVCODE_CLAUDE_MODEL)
+      : [codex, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
         '--json', '--color', 'never', '-C', repo,
         '-c', permArg(runTemp), '-c', 'default_permissions=jevcode-run', '-c', `windows.sandbox=${SANDBOX_MODE}`,
         ...HERMETIC, '-c', skillsOffArg(),
         '-c', `sqlite_home=${stateDir}`, '-c', `log_dir=${stateDir}`,
-        '-o', lastMessageFile, ...(opts.model ? ['-m', opts.model] : []), '-'],
-      stdinFile: promptFile,
-      stdoutFile: eventsFile,
-      stderrFile,
-      env,
+        '-o', lastMessageFile, ...(opts.model ? ['-m', opts.model] : []), '-'];
+    const { state } = await launch({
+      stateFile: path.join(runDir, 'launcher.json'),
+      timeoutMs, command, stdinFile: promptFile, stdoutFile: eventsFile, stderrFile, env, cwd: repo,
       onSpawn: (c) => { child = c; },
     });
     const execMs = Date.now() - tExec;
     stopFollow();
     process.off('SIGINT', onSigint);
 
-    const ev = summarizeEvents(fs.readFileSync(eventsFile, 'utf8'), fs.readFileSync(stderrFile, 'utf8'));
+    const eventsText = fs.readFileSync(eventsFile, 'utf8');
+    const stderrText = fs.readFileSync(stderrFile, 'utf8');
+    const ev = agent === 'claude' ? summarizeClaudeEvents(eventsText, stderrText) : summarizeEvents(eventsText, stderrText);
+    if (agent === 'claude' && ev.result?.result) fs.writeFileSync(lastMessageFile, String(ev.result.result));
     // quota_exhausted stays reserved until the provider signal is verified (design 6.2); candidates are recorded.
     const executionOutcome = cancelled ? 'cancelled'
       : state?.terminatedBy === 'timeout' ? 'timed_out'
         : !state || state.activeProcesses > 0 ? 'unknown'
           : ev.turnCompleted && state.mainExitCode === 0 ? 'completed' : 'failed';
+    const hitLimit = !cancelled && executionOutcome !== 'completed' && ev.quotaCandidates.length > 0;
+    const limit = hitLimit ? markQuota(agent, id, ev.quotaCandidates, ev.rateLimit) : null;
+    if (limit) console.log(`  ! ${agent} 사용 한도 도달 (${hhmm(limit.until)}까지로 기록)`);
 
     const endTree = snapshotTree(repo, runDir);
     const policyStatus = gitFingerprint(repo) === fp0 ? 'clean' : 'violated';
@@ -584,11 +750,19 @@ async function cmdRun(argv) {
       fs.writeFileSync(path.join(runDir, 'diff.patch'), patch.length > 2_000_000 ? `${patch.slice(0, 2_000_000)}\n[truncated]\n` : patch);
     }
 
+    // Codex stopped on its limit: put the tree back and let Claude take the same task, unless told not to.
+    let autoFallback = null;
+    if (limit && agent === 'codex' && !opts['no-fallback'] && !opts.agent && !quotaActive('claude') && claudeExe()) {
+      const undone = startTree === endTree ? { restored: [], removed: [] } : restoreToTree(repo, runDir, startTree);
+      if (undone) autoFallback = undone;
+      else console.log('  ! 자동 되돌리기 실패: 작업 트리가 run 전 상태와 맞지 않아 Claude로 넘기지 않습니다. 리뷰 화면에서 처리하세요.');
+    }
+
     const tVerify = Date.now();
     let verification = [];
     let verificationStatus = 'skipped';
     let verifiedTreeChanged = false;
-    if (cfg.verify.length && !cancelled && executionOutcome !== 'unknown') {
+    if (!autoFallback && cfg.verify.length && !cancelled && executionOutcome !== 'unknown') {
       console.log(`  verifying (${cfg.verify.length} command${cfg.verify.length > 1 ? 's' : ''})...`);
       verification = await runVerification({ repo, runDir, runTemp, env, commands: cfg.verify, timeoutMs, codex });
       verificationStatus = verification.every((v) => v.status === 'passed') ? 'passed'
@@ -597,7 +771,7 @@ async function cmdRun(argv) {
     }
     // Host-side Unity check after the sandboxed commands. It may make Unity write .meta files, which
     // the user commits separately, so it runs after the tree-change check above.
-    if (cfg.unity && !cancelled && executionOutcome !== 'unknown') {
+    if (!autoFallback && cfg.unity && !cancelled && executionOutcome !== 'unknown') {
       console.log('  unity check (host: recompile + console)...');
       verification.push(await unityCheck({ repo, runDir, index: verification.length }));
       verificationStatus = verification.every((v) => v.status === 'passed') ? 'passed'
@@ -607,13 +781,19 @@ async function cmdRun(argv) {
 
     const lastMessage = fs.existsSync(lastMessageFile) ? fs.readFileSync(lastMessageFile, 'utf8') : ev.messages.at(-1) || '';
     const record = {
-      id, repo, tag: opts.tag || null, task: task.slice(0, 2000), model: opts.model || null,
+      id, repo, tag: opts.tag || null, task: task.slice(0, 2000),
+      agent, isolation: agent === 'claude' ? CLAUDE_ISOLATION : `codex os sandbox (${SANDBOX_MODE})`,
+      model: (agent === 'claude' ? opts['claude-model'] || process.env.JEVCODE_CLAUDE_MODEL : opts.model) || null,
+      ...(fallbackFrom ? { fallbackFrom } : {}),
       startedAt: new Date(t0).toISOString(),
       executionOutcome, verificationStatus, policyStatus, acceptanceStatus: 'needs_review',
       durations: { execMs, verifyMs, totalMs: Date.now() - t0, overheadMs: Date.now() - t0 - execMs - verifyMs },
       startTree, endTree, delta,
-      commands: ev.commands, denials: ev.denials, errors: ev.errors.slice(0, 5),
+      commands: ev.commands, ...(ev.tools ? { tools: ev.tools.slice(0, 200) } : {}),
+      denials: ev.denials, errors: ev.errors.slice(0, 5),
       usage: ev.usage, quotaSignalCandidates: ev.quotaCandidates,
+      ...(limit ? { usageLimitUntil: limit.until } : {}),
+      ...(autoFallback ? { autoFallback: 'claude' } : {}),
       verification: verification.map(({ tail, ...v }) => v), verifiedTreeChanged,
       launcher: state && { terminatedBy: state.terminatedBy, activeProcesses: state.activeProcesses, mainExitCode: state.mainExitCode },
       lastMessage: lastMessage.slice(0, 4000),
@@ -625,6 +805,16 @@ async function cmdRun(argv) {
     if (executionOutcome === 'completed') fs.rmSync(eventsFile, { force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });
     printRun(record, verification);
+
+    if (autoFallback) {
+      // Operational stop, not a judgement of the agent's work: recorded as an automatic rejection
+      // (source: 'auto') with the automatic revert, so the pending-run check lets the fallback start.
+      const at = new Date().toISOString();
+      appendJsonl(REVIEWS, { id, decision: 'rejected', cause: 'quota_or_rate_limit', explainable: true,
+        reason: 'Codex 사용 한도로 중단. 변경을 자동으로 되돌리고 같은 명령을 Claude로 다시 실행함', viewedMs: null, source: 'auto', at });
+      appendJsonl(REVERTS, { runId: id, restored: autoFallback.restored, removed: autoFallback.removed, at, source: 'auto' });
+      console.log(`\n  → 변경 ${autoFallback.restored.length + autoFallback.removed.length}개를 되돌렸습니다. 같은 명령을 Claude로 다시 실행합니다.\n`);
+    }
 
     // Shadow decisions: recorded only. The bounded state is kept so providers added later
     // (e.g. once a Jev key exists) can be backfilled with `jevcode decide`.
@@ -639,8 +829,8 @@ async function cmdRun(argv) {
       console.log('   ! jev 인증 실패: TYPESAFE_API_KEY를 확인하세요. 키를 바꿨다면 새 터미널에서 실행해야 적용됩니다.'
         + ` 이 run은 나중에 jevcode decide ${id} --provider jev로 채울 수 있습니다.`);
     }
+    return { id, fallback: !!autoFallback };
   } finally {
-    release();
     fs.rmSync(runTemp, { recursive: true, force: true });
   }
 }
@@ -764,6 +954,8 @@ function cmdStats() {
   console.log(`verification: ${JSON.stringify(count('verificationStatus'))}`);
   console.log(`policy:       ${JSON.stringify(count('policyStatus'))}`);
   console.log(`acceptance:   ${JSON.stringify(count('acceptanceStatus'))}`);
+  // Claude runs have a different agent and a weaker isolation; evaluate them apart from Codex.
+  console.log(`agent:        ${JSON.stringify(runs.reduce((m, r) => ((m[r.agent || 'codex'] = (m[r.agent || 'codex'] || 0) + 1), m), {}))}`);
   console.log(`avg tokens:   in ${fmtN(avg(withUsage.map((r) => r.usage.input)))}, cached ${fmtN(avg(withUsage.map((r) => r.usage.cachedInput)))}, out ${fmtN(avg(withUsage.map((r) => r.usage.output)))}`);
   console.log(`avg time:     exec ${fmtMs(avg(runs.map((r) => r.durations.execMs)))}, verify ${fmtMs(avg(runs.map((r) => r.durations.verifyMs)))}, overhead ${fmtMs(avg(runs.map((r) => r.durations.overheadMs)))}`);
   const tags = [...new Set(runs.map((r) => r.tag).filter(Boolean))];
