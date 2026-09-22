@@ -157,11 +157,12 @@ function gitFingerprint(repo) {
 function treeDelta(repo, from, to) {
   if (from === to) return [];
   const stats = new Map();
-  for (const line of git(repo, ['diff', '--numstat', from, to]).split('\n').filter(Boolean)) {
+  // core.quotepath=false keeps non-ASCII (e.g. Korean) paths readable and identical across outputs.
+  for (const line of git(repo, ['-c', 'core.quotepath=false', 'diff', '--numstat', from, to]).split('\n').filter(Boolean)) {
     const [add, del, file] = line.split('\t');
     stats.set(file, { add: add === '-' ? null : +add, del: del === '-' ? null : +del });
   }
-  return git(repo, ['diff', '--name-status', from, to]).split('\n').filter(Boolean).map((line) => {
+  return git(repo, ['-c', 'core.quotepath=false', 'diff', '--name-status', from, to]).split('\n').filter(Boolean).map((line) => {
     const [status, ...files] = line.split('\t');
     const file = files[files.length - 1];
     return { status, path: file, ...(stats.get(file) || {}) };
@@ -427,7 +428,7 @@ async function cmdRun(argv) {
     const delta = treeDelta(repo, startTree, endTree);
     // Snapshot trees are unreachable objects that `git gc` may prune, so keep the patch itself.
     if (startTree !== endTree) {
-      const patch = execFileSync('git', ['-C', repo, 'diff', startTree, endTree], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const patch = execFileSync('git', ['-C', repo, '-c', 'core.quotepath=false', 'diff', startTree, endTree], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
       fs.writeFileSync(path.join(runDir, 'diff.patch'), patch.length > 2_000_000 ? `${patch.slice(0, 2_000_000)}\n[truncated]\n` : patch);
     }
 

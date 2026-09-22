@@ -55,6 +55,10 @@
   .scroll { max-height: 420px; overflow: auto; background: var(--soft); border-radius: 6px; padding: 8px; }
   .diff .add { background: var(--add-bg); } .diff .del { background: var(--del-bg); } .diff .hunk { background: var(--hunk); color: var(--muted); }
   .diff .file { font-weight: 700; margin-top: 8px; }
+  .file-row { cursor: pointer; }
+  .file-row:hover td { background: var(--soft); }
+  .file-row.sel td { background: var(--soft); font-weight: 600; }
+  .file-row.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
   th { color: var(--muted); font-weight: 600; }
@@ -147,6 +151,23 @@ async function loadList(selectId) {
   if (selectId) openRun(selectId);
 }
 
+// Splits a unified patch into per-file chunks keyed by the post-change path (pre-change for deletions).
+function splitPatch(patch) {
+  const chunks = new Map();
+  if (!patch) return chunks;
+  const unquote = (p) => p.replace(/^"|"$/g, '');
+  let path = null;
+  let lines = [];
+  const flush = () => { if (path) chunks.set(path, lines.join('\n')); };
+  for (const line of patch.split('\n')) {
+    const header = line.match(/^diff --git "?a\/(.*?)"? "?b\/(.*?)"?$/);
+    if (header) { flush(); path = unquote(header[2]); lines = [line]; continue; }
+    if (path) lines.push(line);
+  }
+  flush();
+  return chunks;
+}
+
 function renderDiff(patch) {
   if (!patch) return '<span class="hint">변경 없음 또는 diff 파일 없음</span>';
   return `<div class="scroll diff"><pre>${patch.split('\n').map((l) => {
@@ -214,9 +235,9 @@ async function openRun(id) {
       <div class="row">${badge(VERIFY[v.status] || [v.status, 'b-muted'])}<code>${esc(v.command)}</code><span class="hint">exit ${v.exitCode ?? '-'} · ${secs(v.durationMs)}</span></div>
       ${verificationTails[i] ? `<div class="scroll"><pre>${esc(verificationTails[i])}</pre></div>` : ''}`).join('') : '<span class="hint">설정된 검증 명령 없음</span>'}
       ${run.verifiedTreeChanged ? '<p class="hint">⚠ 검증이 작업 트리를 바꿨습니다. 결과는 검증 전 상태 기준입니다.</p>' : ''}</section>
-    <section><h2>변경 (${run.delta.length}파일)</h2>
-      <table>${run.delta.map((d) => `<tr><td>${esc(d.status)}</td><td>${esc(d.path)}</td><td>+${d.add ?? '?'} −${d.del ?? '?'}</td></tr>`).join('')}</table>
-      <div style="margin-top:8px">${renderDiff(patch)}</div></section>
+    <section><h2>변경 (${run.delta.length}파일) <span class="hint">· 파일을 누르면 그 파일의 변경을 보여 줍니다</span></h2>
+      <table>${run.delta.map((d, i) => `<tr class="file-row" data-file="${i}"><td>${esc(d.status)}</td><td>${esc(d.path)}</td><td>+${d.add ?? '?'} −${d.del ?? '?'}</td></tr>`).join('')}</table>
+      <div style="margin-top:8px" id="fileDiff">${run.delta.length ? '' : renderDiff(patch)}</div></section>
     <section><h2>실행한 명령 (${run.commands.length})</h2>
       <table>${run.commands.map((c) => `<tr><td>${c.exit === 0 ? '✓' : `<span style="color:var(--bad)">exit ${esc(c.exit)}</span>`}</td><td><pre>${esc(c.command)}</pre></td></tr>`).join('') || '<tr><td class="hint">없음</td></tr>'}</table></section>
     ${run.denials.length ? `<section><h2>거부된 동작 (${run.denials.length})</h2><table>${run.denials.map((d) => `<tr><td>${esc(d.via)}</td><td><pre>${esc(d.detail)}</pre></td></tr>`).join('')}</table></section>` : ''}
@@ -225,6 +246,20 @@ async function openRun(id) {
         ? `<table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${latestPerProvider(decisions).map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table>`
         : `<p class="hint">리뷰를 저장한 뒤에 공개됩니다(${decisions.length}건 기록됨). 리뷰가 판단 제공자를 채점하는 정답이므로, 먼저 보면 판정이 끌려갑니다.</p>`}</section>
     <p class="hint">기록 위치: ${esc(dir)}${hasRawEvents ? ' · 원시 이벤트 보존됨' : ''}</p>`;
+
+  // Per-file diff: clicking a changed file shows only that file's patch; the first file starts selected.
+  const chunks = splitPatch(patch);
+  const deltaRows = document.querySelectorAll('.file-row');
+  const showFile = (i) => {
+    deltaRows.forEach((row) => row.classList.toggle('sel', row.dataset.file === String(i)));
+    const d = run.delta[i];
+    const chunk = chunks.get(d.path);
+    document.getElementById('fileDiff').innerHTML = chunk
+      ? renderDiff(chunk)
+      : `<span class="hint">${patch ? '이 파일의 diff가 없습니다 (바이너리이거나 잘린 diff).' : 'diff 파일이 없습니다.'}</span>`;
+  };
+  deltaRows.forEach((row) => row.onclick = () => showFile(Number(row.dataset.file)));
+  if (run.delta.length) showFile(0);
 
   const state = { decision: review?.decision || null, explainable: typeof review?.explainable === 'boolean' ? review.explainable : null };
   const causeEl = document.getElementById('cause');
