@@ -57,6 +57,24 @@ jevcode ui
 
 서버는 `127.0.0.1`에서만 열리고, 실행마다 새 토큰이 붙은 주소로만 접근할 수 있습니다.
 
+## Unity 컴파일 확인 (`--unity`)
+
+```powershell
+jevcode init --verify "dotnet test tests/Core.Tests --no-restore -m:1" --unity
+jevcode check-unity     # 지금 한 번만 확인
+```
+
+켜 두면 샌드박스 검증이 끝난 뒤 jevcode가 **샌드박스 밖에서** 정해진 Unity CLI 명령만 실행합니다: `recompile` → 완료 대기 → `console_status`의 컴파일 실패 여부로 판정 → 이번 컴파일에서 새로 나온 에러를 기록. 결과는 검증 목록에 `unity: recompile + console errors (host)`로 들어가고, 리뷰 화면과 판단 제공자가 받는 상태에도 반영됩니다.
+
+- 필요한 것: Unity CLI, 프로젝트에 `com.unity.pipeline` 패키지, **run이 끝날 때 Unity 에디터가 열려 있을 것.** 에디터 창에 포커스가 없어도 동작합니다.
+- 에디터가 꺼져 있으면 실패가 아니라 `unknown`(확인 불가)으로 기록합니다.
+- `eval` 같은 명령은 쓰지 않습니다. Codex는 샌드박스 안에 있어서 이 확인을 부르거나 바꿀 수 없습니다.
+- Unity가 새로 만든 `.meta`는 이 확인 뒤에 생길 수 있으니, 사람이 따로 커밋합니다.
+
+## 로컬 서버 경고
+
+run을 시작할 때 `127.0.0.1:8080`(MCP for Unity)에서 서버가 돌고 있으면 경고를 띄우고 기록에 남깁니다. run을 막지는 않습니다. **샌드박스는 이 PC 안의 로컬 서버 접속을 막지 않기 때문에**, 샌드박스 안의 명령도 그 서버에 접속할 수 있습니다(2026-09-22 확인). jevcode run 중에는 꺼 두세요.
+
 ## 사용법 (CLI)
 
 ```powershell

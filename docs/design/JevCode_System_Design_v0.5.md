@@ -196,6 +196,8 @@ B 착수 전에 각 도구를 끄거나, 경계를 넘지 못함을 검증하거
 - **Git 메타데이터는 불변 경계다.** `.git` 쓰기는 `:workspace` 계열 프로필이 OS 수준에서 막는다(A-gate G2: commit, update-ref, refs/config/HEAD 직접 쓰기 모두 차단). 시작·종료 시 HEAD, refs, index, config 지문을 비교해 이중 확인한다. index는 파일 바이트가 아니라 **항목 내용(`git ls-files --stage`)**으로 비교한다. 사람이나 에디터가 `git status`를 실행하면 index의 stat 캐시만 다시 쓰여 바이트가 바뀌기 때문이다. 이 수정 전의 run `20260922-120718-1f7f`(T4 retry)는 run 도중 `git status` 때문에 `policyStatus=violated`가 기록된 **오탐**이며, 정책 위반 지표에서 제외한다.
 - **제어 디렉터리**는 `%LOCALAPPDATA%\JevCode`에 두고 `jevcode-run` 프로필에서 deny한다.
 - push·배포·외부 메시지 전송은 지원 범위에서 제외한다. 명령 네트워크 차단은 A-gate GN에서 확인됐다.
+- **로컬 서버는 격리되지 않는다 (2026-09-22 발견).** GN은 외부 호스트만 검사했다. 샌드박스 안의 명령이 `127.0.0.1:8080`의 MCP for Unity 서버에는 접속했고(HTTP 응답), Unity Pipeline 서버(`7800`)에는 접속하지 못했다. 즉 로컬 포트 접속 차단은 보장되지 않는다. MCP for Unity에는 에디터에서 코드를 실행하는 도구가 있으므로, 이 서버가 떠 있으면 샌드박스 경계가 약해진다. 현재 대책은 운영 규칙(run 중에는 서버를 끈다)과 run 시작 시 경고다(`localServerWarnings`). A-gate에 "로컬 포트 접속" 검사를 추가해야 하고, 나중에 jevcode 안에서 이 MCP를 쓰려면 `enabled_tools` 허용 목록과 함께 서버 쪽 인증이나 방화벽 규칙이 필요하다.
+- **Unity 컴파일 확인은 호스트에서 한다.** `--unity`가 켜진 저장소는 샌드박스 검증 뒤 컨트롤러가 샌드박스 밖에서 고정된 Unity CLI 명령(`recompile`, `recompile_status`, `console_status`, `console`)만 실행해 컴파일 실패 여부를 검증 항목으로 기록한다. Codex에는 Unity CLI나 MCP를 주지 않는다. Unity MCP(공식)는 지원 중단 예정이고, Unity CLI에는 명령 허용 목록 기능이 없어 `eval`까지 열리기 때문이다.
 
 ### 5.6 데이터 경계
 

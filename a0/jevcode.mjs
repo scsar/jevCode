@@ -11,12 +11,15 @@
 //   jevcode log [n] | show <id> | stats | eval
 //   jevcode review <id> accept|reject [--cause <cause>] [--explainable yes|no] [reason]
 //   jevcode ui                      (local review screen, see ui.mjs)
+//   jevcode init ... --unity        (after each run: host-side Unity recompile + console check)
+//   jevcode check-unity             (run that Unity check once, now)
 //   jevcode decide <id>|--all [--provider rules|jev]
 //   jevcode bypass [note]
 
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
@@ -88,7 +91,9 @@ function parseArgs(argv, flags) {
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const name = argv[i].startsWith('--') ? argv[i].slice(2) : null;
-    if (name && name in flags) {
+    if (name && flags[name] === 'bool') {
+      opts[name] = true;
+    } else if (name && name in flags) {
       const value = argv[++i];
       if (value === undefined) die(`--${name} needs a value`);
       if (flags[name] === 'list') (opts[name] ||= []).push(value);
@@ -349,16 +354,105 @@ async function runVerification({ repo, runDir, runTemp, env, commands, timeoutMs
   return results;
 }
 
+// ---------------------------------------------------------------- local servers + Unity check
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Local agent servers the sandbox does NOT isolate: commands inside it can still reach 127.0.0.1
+// ports (found 2026-09-22 with MCP for Unity on 8080). Warn only; the user decides.
+const WATCHED_LOCAL_PORTS = [{ port: 8080, label: 'MCP for Unity' }];
+
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    const done = (open) => { socket.destroy(); resolve(open); };
+    socket.setTimeout(400, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+async function localServerWarnings() {
+  const warnings = [];
+  for (const { port, label } of WATCHED_LOCAL_PORTS) {
+    if (await portOpen(port)) warnings.push(`${label} 서버가 127.0.0.1:${port}에서 실행 중입니다. 샌드박스 안의 명령도 접속할 수 있으니 run 중에는 꺼 두세요.`);
+  }
+  return warnings;
+}
+
+function unityExe() {
+  const r = spawnSync('where.exe', ['unity'], { encoding: 'utf8' });
+  return (r.stdout || '').split(/\r?\n/).find((l) => /\.(exe|cmd)$/i.test(l)) || null;
+}
+
+// Host-side Unity check (not sandboxed, fixed commands only): recompile, wait, read the Editor's
+// compile-failure flag and console errors through the Unity CLI + Pipeline package.
+async function unityCheck({ repo, runDir, index }) {
+  const started = Date.now();
+  const log = [];
+  const finish = (status, reason) => {
+    if (runDir) fs.writeFileSync(path.join(runDir, `verify-${index}.out.txt`), log.join('\n'));
+    return { command: 'unity: recompile + console errors (host)', status, exitCode: null, durationMs: Date.now() - started, reason: reason || null, tail: log.slice(-15).join('\n') };
+  };
+  const exe = unityExe();
+  if (!exe) { log.push('Unity CLI를 찾지 못했습니다.'); return finish('unknown', 'unity CLI 없음'); }
+  const call = (args) => {
+    const r = spawnSync(exe, [...args, '--project-path', repo, '--format', 'json', '--no-banner', '--non-interactive'], {
+      encoding: 'utf8', timeout: 60000, env: { ...process.env, UNITY_NO_UPDATE_CHECK: '1', UNITY_NO_CONSENT_PROMPT: '1' },
+    });
+    try { return JSON.parse(r.stdout || 'null'); } catch { return null; }
+  };
+  // Results sometimes arrive as a JSON string inside the envelope; during a domain reload data is null.
+  const payload = (j) => {
+    let r = j?.data?.result;
+    if (typeof r === 'string') { try { r = JSON.parse(r); } catch { /* keep string */ } }
+    return r ?? null;
+  };
+  // Remember the console cursor so only errors logged by this compile are reported, not stale buffer entries.
+  const before = payload(call(['command', 'console_status']));
+  const rc = payload(call(['command', 'recompile']));
+  if (!rc) { log.push('Unity 에디터에 연결하지 못했습니다(에디터가 꺼져 있거나 Pipeline 서버 없음).'); return finish('unknown', '에디터 연결 안 됨'); }
+  log.push(`recompile: ${rc.status ?? JSON.stringify(rc)}`);
+  await sleep(1500);
+  let gt = null;
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    gt = payload(call(['command', 'console_status']))?.groundTruth ?? null;
+    if (gt && !gt.compiling) {
+      const rs = payload(call(['command', 'recompile_status']));
+      if (rs && !['compiling', 'triggered'].includes(rs.status)) break;
+    }
+    await sleep(2000);
+  }
+  if (!gt || gt.compiling) { log.push('제한 시간 안에 컴파일 완료를 확인하지 못했습니다.'); return finish('unknown', '컴파일 대기 시간 초과'); }
+  const since = before && typeof before.cursor === 'number'
+    ? ['--since', String(before.cursor), '--since_session', String(before.session)] : [];
+  let entries = payload(call(['command', 'console', '--level', 'error', '--tail', '20', ...since]))?.entries || [];
+  // Already failing with nothing recompiled: the errors were logged earlier, so fall back to the recent tail.
+  if (gt.compilationFailed && !entries.length) entries = payload(call(['command', 'console', '--level', 'error', '--tail', '20']))?.entries || [];
+  for (const e of entries) log.push(String(e.message ?? e.condition ?? JSON.stringify(e)).split('\n')[0].slice(0, 300));
+  log.push(`compilationFailed=${gt.compilationFailed} consoleErrors=${gt.consoleErrors} consoleWarnings=${gt.consoleWarnings}`);
+  return finish(gt.compilationFailed ? 'failed' : 'passed');
+}
+
 // ---------------------------------------------------------------- commands
 
+async function cmdCheckUnity() {
+  const repo = repoRoot();
+  console.log(`unity check in ${repo} ...`);
+  const r = await unityCheck({ repo, runDir: null, index: 0 });
+  console.log(`[${r.status}]${r.reason ? ` ${r.reason}` : ''} (${fmtMs(r.durationMs)})\n${r.tail}`);
+  process.exitCode = r.status === 'passed' ? 0 : 1;
+}
+
 function cmdInit(argv) {
-  const { opts } = parseArgs(argv, { verify: 'list', 'timeout-min': 'value' });
+  const { opts } = parseArgs(argv, { verify: 'list', 'timeout-min': 'value', unity: 'bool' });
   const repo = repoRoot();
   const config = readConfig();
-  config[repoKey(repo)] = { repo, verify: opts.verify || [], timeoutMin: +(opts['timeout-min'] || 30) };
+  config[repoKey(repo)] = { repo, verify: opts.verify || [], timeoutMin: +(opts['timeout-min'] || 30), unity: !!opts.unity };
   fs.mkdirSync(ROOT, { recursive: true });
   fs.writeFileSync(CONFIG, JSON.stringify(config, null, 2));
-  console.log(`configured ${repo}\n  verify: ${(opts.verify || []).join(' | ') || '(none)'}\n  timeout: ${config[repoKey(repo)].timeoutMin} min`);
+  console.log(`configured ${repo}\n  verify: ${(opts.verify || []).join(' | ') || '(none)'}\n  unity check: ${opts.unity ? 'on (host-side recompile + console after each run)' : 'off'}\n  timeout: ${config[repoKey(repo)].timeoutMin} min`);
 }
 
 async function cmdRun(argv) {
@@ -397,6 +491,8 @@ async function cmdRun(argv) {
     // Echo what actually arrived: cmd.exe silently drops everything after the first line break.
     const tail = task.trim().slice(-50).replace(/\s+/g, ' ');
     console.log(`  task: ${task.length}자, ${task.split('\n').length}줄, 끝: "...${tail}"`);
+    const localServers = await localServerWarnings();
+    for (const w of localServers) console.log(`  ! ${w}`);
     let cancelled = false;
     let child = null;
     const onSigint = () => { cancelled = true; console.log('\n  cancelling...'); child?.kill(); };
@@ -449,6 +545,14 @@ async function cmdRun(argv) {
         : verification.some((v) => v.status === 'unknown') ? 'unknown' : 'failed';
       verifiedTreeChanged = snapshotTree(repo, runDir) !== endTree;
     }
+    // Host-side Unity check after the sandboxed commands. It may make Unity write .meta files, which
+    // the user commits separately, so it runs after the tree-change check above.
+    if (cfg.unity && !cancelled && executionOutcome !== 'unknown') {
+      console.log('  unity check (host: recompile + console)...');
+      verification.push(await unityCheck({ repo, runDir, index: verification.length }));
+      verificationStatus = verification.every((v) => v.status === 'passed') ? 'passed'
+        : verification.some((v) => v.status === 'failed') ? 'failed' : 'unknown';
+    }
     const verifyMs = Date.now() - tVerify;
 
     const lastMessage = fs.existsSync(lastMessageFile) ? fs.readFileSync(lastMessageFile, 'utf8') : ev.messages.at(-1) || '';
@@ -463,6 +567,7 @@ async function cmdRun(argv) {
       verification: verification.map(({ tail, ...v }) => v), verifiedTreeChanged,
       launcher: state && { terminatedBy: state.terminatedBy, activeProcesses: state.activeProcesses, mainExitCode: state.mainExitCode },
       lastMessage: lastMessage.slice(0, 4000),
+      localServerWarnings: localServers,
     };
     appendJsonl(RUNS, record);
 
@@ -625,9 +730,10 @@ const commands = {
   init: cmdInit, run: cmdRun, log: cmdLog, show: cmdShow, review: cmdReview, bypass: cmdBypass,
   stats: cmdStats, decide: cmdDecide, eval: cmdEval,
   ui: async () => (await import('./ui.mjs')).start(),
+  'check-unity': cmdCheckUnity,
 };
 if (!commands[command]) {
-  console.log('usage: jevcode init|run|log|show|review|decide|eval|bypass|stats|ui  (see header of jevcode.mjs)');
+  console.log('usage: jevcode init|run|log|show|review|decide|eval|bypass|stats|ui|check-unity  (see header of jevcode.mjs)');
   process.exit(command ? 1 : 0);
 }
 await commands[command](argv);
