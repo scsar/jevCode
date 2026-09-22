@@ -23,6 +23,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
+import { rejectedTwins } from './twins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // JEVCODE_HOME relocates all control data; tests must set it so real A0 records are never touched.
@@ -382,26 +383,6 @@ function pendingRuns(repo) {
   return pending;
 }
 
-// A task identical to one already rejected for the agent's work (a re-pasted old command) stops a
-// new run unless --allow-rejected. Runs rejected for operational causes (quota, timeout, sandbox,
-// tooling) are expected to be rerun as-is and do not count. Nothing is passed to the agent.
-const RERUNNABLE_CAUSES = new Set(['quota_or_rate_limit', 'timeout_or_cancel', 'sandbox_denial', 'environment_or_tooling']);
-const normalizeTask = (text) => text.replace(/\s+/g, ' ').trim();
-
-function rejectedTwins(repo, task) {
-  const want = normalizeTask(task);
-  const reviews = new Map(readJsonl(REVIEWS).map((v) => [v.id, v]));
-  const twins = [];
-  for (const r of readJsonl(RUNS)) {
-    if (r.repo !== repo) continue;
-    const review = reviews.get(r.id);
-    if (review?.decision !== 'rejected' || RERUNNABLE_CAUSES.has(review.cause)) continue;
-    const promptFile = path.join(ROOT, 'runs', r.id, 'prompt.txt');
-    const text = fs.existsSync(promptFile) ? fs.readFileSync(promptFile, 'utf8') : r.task;
-    if (normalizeTask(text || '') === want) twins.push({ id: r.id, cause: review.cause, reason: review.reason || '' });
-  }
-  return twins;
-}
 
 // ---------------------------------------------------------------- local servers + Unity check
 
@@ -523,7 +504,9 @@ async function cmdRun(argv) {
 
   ensureLauncher();
   const codex = codexExe();
-  const twins = rejectedTwins(repo, task);
+  // A task identical to one rejected for the agent's work (an old command pasted again) stops here
+  // unless --allow-rejected; operational rejections (quota, timeout, ...) are meant to be rerun as-is.
+  const twins = rejectedTwins({ root: ROOT, runs: readJsonl(RUNS), reviews: new Map(readJsonl(REVIEWS).map((v) => [v.id, v])), repo, task });
   if (twins.length && !opts['allow-rejected']) {
     console.error('jevcode: 이 명령은 이전에 거절된 run과 글자까지 같습니다. 예전 명령을 다시 붙여 넣은 것 아닌지 확인하세요.');
     for (const t of twins) console.error(`  ${t.id}  거절 (${t.cause || '-'})${t.reason ? `: ${t.reason.replace(/\s+/g, ' ').slice(0, 120)}` : ''}`);

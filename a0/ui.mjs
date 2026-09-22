@@ -12,6 +12,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAUSES, QUESTIONS, evaluate } from './decisions.mjs';
+import { rejectedTwins, taskText } from './twins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(process.env.JEVCODE_HOME || path.join(process.env.LOCALAPPDATA, 'JevCode'), 'a0');
@@ -317,6 +318,10 @@ function runDetail(id) {
   const patch = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : null;
   return {
     run,
+    prompt: taskText(ROOT, run),
+    // Earlier runs rejected for the agent's work with the very same task: shown so a re-pasted old
+    // command is visible from the record itself.
+    twins: rejectedTwins({ root: ROOT, runs: readJsonl(FILES.runs), reviews: latestReviews(), repo: run.repo, task: taskText(ROOT, run), beforeId: run.id }),
     review: latestReviews().get(id) || null,
     decisions: readJsonl(FILES.decisions).filter((d) => d.runId === id),
     verificationTails: run.verification.map((_, i) => readTail(path.join(dir, `verify-${i}.out.txt`), 60)),

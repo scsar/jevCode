@@ -256,8 +256,10 @@ function extractPublicApi(chunks) {
   };
 }
 
-function renderReviewPoints(run, chunks) {
+function renderReviewPoints(run, chunks, twins = []) {
   const assumptions = extractSection(run.lastMessage, '가정');
+  // Existing code the result depends on but the run did not change (the diff cannot show it).
+  const relied = extractSection(run.lastMessage, '의존한 기존 코드');
   const proposals = extractSection(run.lastMessage, '제안');
   const behavior = extractSection(run.lastMessage, '기존 동작 변경');
   const api = extractPublicApi(chunks);
@@ -285,10 +287,14 @@ function renderReviewPoints(run, chunks) {
       <div class="hint">명령은 복사만 됩니다. 실행은 직접 터미널에서.</div>` : ''}
     </div>` : '';
   renderReviewPoints.lastCommands = commands;
+  const twinBlock = twins.length ? `<div class="warn-box"><b>⚠ 이전에 거절된 run과 같은 명령</b> — 예전 명령을 다시 붙여 넣은 것일 수 있습니다.<table>${twins.map((t) => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.cause || '-')}</td><td class="hint">${esc(t.reason.replace(/\s+/g, ' ').slice(0, 160))}</td></tr>`).join('')}</table></div>` : '';
   return `<section class="points"><h2>리뷰 요점</h2>
+    ${twinBlock}
     ${humanBlock}
     <div class="row"${human ? ' style="margin-top:10px"' : ''}><b>기존 동작 변경</b><span class="hint">가장 위험한 부분. "없음"이면 새 코드만 추가된 것</span></div>
     ${behaviorBlock}
+    <div class="row" style="margin-top:10px"><b>의존한 기존 코드</b><span class="hint">이번에 바꾸지 않았지만 결과를 좌우하는 코드. diff에 안 보이는 원인이 여기 있다</span></div>
+    ${relied == null ? '<p class="hint">섹션 없음 (AGENTS.md 규칙 추가 전 run이거나 누락)</p>' : `<div class="assume"><pre>${esc(relied)}</pre></div>`}
     <div class="row" style="margin-top:10px"><b>공개 API</b><span class="hint">다른 코드가 쓰게 될 이름과 모양</span></div>
     ${api.removed.length ? `<div class="warn-box"><b>⚠ 삭제된 공개 API ${api.removed.length}개</b> — 다른 코드가 쓰고 있지 않은지 확인하세요.${apiRows(api.removed)}</div>` : ''}
     ${api.changed.length ? `<div class="hint">변경 ${api.changed.length}개</div>${apiRows(api.changed)}` : ''}
@@ -337,7 +343,7 @@ async function openRun(id) {
   current = id;
   openedAt = performance.now();
   document.querySelectorAll('.item').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
-  const { run, review, decisions, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
+  const { run, prompt, twins, review, decisions, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
   const u = run.usage;
   const failed = ['failed', 'timed_out', 'unknown'].includes(run.executionOutcome);
   document.getElementById('detail').innerHTML = `
@@ -364,8 +370,8 @@ async function openRun(id) {
       ${run.quotaSignalCandidates?.length ? `<div class="row"><span class="label">한도 신호?</span><pre>${esc(run.quotaSignalCandidates.join('\n'))}</pre></div>` : ''}
       ${run.errors?.length ? `<div class="row"><span class="label">오류</span><pre>${esc(run.errors.join('\n'))}</pre></div>` : ''}
     </section>
-    ${renderReviewPoints(run, splitPatch(patch))}
-    <section><h2>작업</h2><pre>${esc(run.task)}</pre></section>
+    ${renderReviewPoints(run, splitPatch(patch), twins || [])}
+    <section><h2>작업</h2><pre>${esc(prompt || run.task)}</pre></section>
     <section><h2>실행기의 마지막 메시지 (검증되지 않은 주장)</h2><div class="claim"><pre>${esc(run.lastMessage || '(없음)')}</pre></div></section>
     <section><h2>검증</h2>${run.verification.length ? run.verification.map((v, i) => `
       <div class="row">${badge(VERIFY[v.status] || [v.status, 'b-muted'])}<code>${esc(v.command)}</code><span class="hint">exit ${v.exitCode ?? '-'} · ${secs(v.durationMs)}</span></div>
