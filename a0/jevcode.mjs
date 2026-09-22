@@ -32,6 +32,8 @@ const RUNS = path.join(ROOT, 'runs.jsonl');
 const REVIEWS = path.join(ROOT, 'reviews.jsonl');
 const BYPASSES = path.join(ROOT, 'bypasses.jsonl');
 const DECISIONS = path.join(ROOT, 'decisions.jsonl');
+const COMMITS = path.join(ROOT, 'commits.jsonl');
+const REVERTS = path.join(ROOT, 'reverts.jsonl');
 const CONFIG = path.join(ROOT, 'repos.json');
 const TEMP_ROOT = path.join(HOME, 'tmp');
 const LAUNCHER_SRC = path.join(HERE, '..', 'spikes', 'a-gate', 'launcher', 'JobLauncher.cs');
@@ -354,6 +356,32 @@ async function runVerification({ repo, runDir, runTemp, env, commands, timeoutMs
   return results;
 }
 
+// ---------------------------------------------------------------- unresolved earlier runs
+//
+// A run left unreviewed, accepted-but-uncommitted or rejected-but-unreverted leaves files behind;
+// the next run then builds on them and its commit gets blocked. Such runs stop a new run unless
+// --allow-pending. "Left behind" = the run's files still differ from HEAD, so resolving it by hand
+// (committing or reverting outside the UI) also clears it.
+function pendingRuns(repo) {
+  const reviews = new Map(readJsonl(REVIEWS).map((v) => [v.id, v]));
+  const committed = new Set(readJsonl(COMMITS).map((c) => c.runId));
+  const reverted = new Set(readJsonl(REVERTS).map((r) => r.runId));
+  const pending = [];
+  for (const r of readJsonl(RUNS)) {
+    if (r.repo !== repo) continue;
+    const review = reviews.get(r.id);
+    const paths = r.delta.map((d) => d.path);
+    let dirty = false;
+    if (paths.length) {
+      try { dirty = git(repo, ['status', '--porcelain', '--', ...paths], { GIT_LITERAL_PATHSPECS: '1' }) !== ''; } catch { dirty = true; }
+    }
+    if (!review) pending.push({ id: r.id, need: '리뷰', files: paths.length });
+    else if (review.decision === 'accepted' && !committed.has(r.id) && dirty) pending.push({ id: r.id, need: '커밋 (수락됨)', files: paths.length });
+    else if (review.decision === 'rejected' && !reverted.has(r.id) && dirty) pending.push({ id: r.id, need: '되돌리기 (거절됨)', files: paths.length });
+  }
+  return pending;
+}
+
 // ---------------------------------------------------------------- local servers + Unity check
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -456,7 +484,7 @@ function cmdInit(argv) {
 }
 
 async function cmdRun(argv) {
-  const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value' });
+  const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value', 'allow-pending': 'bool' });
   const task = opts['prompt-file'] ? fs.readFileSync(opts['prompt-file'], 'utf8') : rest.join(' ');
   if (!task.trim()) die('usage: jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"');
 
@@ -474,6 +502,15 @@ async function cmdRun(argv) {
 
   ensureLauncher();
   const codex = codexExe();
+  const pending = pendingRuns(repo);
+  if (pending.length && !opts['allow-pending']) {
+    console.error('jevcode: 정리되지 않은 run이 있습니다. 리뷰 화면(jevcode ui)에서 먼저 처리하세요.');
+    for (const p of pending) console.error(`  ${p.id}  → ${p.need}${p.files ? ` (파일 ${p.files}개)` : ''}`);
+    console.error('  그대로 진행하려면 --allow-pending (다음 run이 남은 파일 위에 쌓이고, 커밋이 막힐 수 있습니다)');
+    fs.rmSync(runDir, { recursive: true, force: true });
+    fs.rmSync(runTemp, { recursive: true, force: true });
+    process.exit(1);
+  }
   const release = acquireLock(repo, id);
   const env = { ...process.env, TEMP: runTemp, TMP: runTemp };
   const t0 = Date.now();

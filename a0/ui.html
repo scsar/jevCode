@@ -141,6 +141,7 @@ async function loadList(selectId) {
   document.getElementById('items').innerHTML = shown.length ? shown.map((r) => {
     const reviewed = (r.review ? badge(r.review.decision === 'accepted' ? ['수락', 'b-ok'] : ['거절', 'b-bad']) : '')
       + (r.commit ? badge([`커밋 ${r.commit.sha.slice(0, 7)}`, 'b-ok']) : '')
+      + (r.reverted ? badge(['되돌림', 'b-muted']) : '')
       + (r.humanTasks && !r.review ? badge(['사람이 할 일', 'b-warn']) : '');
     const pr = r.shadow.jev?.answers?.review_priority?.value ?? r.shadow.rules?.answers?.review_priority?.value;
     return `<div class="item ${current === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
@@ -437,22 +438,55 @@ async function openRun(id) {
   };
   document.getElementById('submit').onclick = async () => { if (await saveReview()) await goNext(); };
 
-  // Accept-and-commit: only this run's files, only if unchanged since the run, never pushes.
+  // Accept-and-commit / reject-and-revert: only this run's files, only if unchanged since the run.
   const panel = document.getElementById('commitPanel');
-  const check = await api(`/api/runs/${encodeURIComponent(run.id)}/commit-check`);
+  const [check, rcheck] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(run.id)}/commit-check`),
+    api(`/api/runs/${encodeURIComponent(run.id)}/revert-check`),
+  ]);
   if (check.committed) {
     panel.innerHTML = `<span class="done">커밋됨</span> <code>${esc(check.committed.sha.slice(0, 8))}</code> ${esc(check.committed.message)} <span class="hint">(${esc(when(check.committed.at))}, push는 터미널에서)</span>`;
     return;
   }
-  const fileRows = check.files.map((f) => `<tr><td>${esc(f.status)}</td><td>${esc(f.path)}</td><td>${f.issue ? `<span style="color:var(--bad)">${esc(f.issue)}</span>` : ''}</td></tr>`).join('');
+  if (rcheck.reverted) {
+    panel.innerHTML = `<span class="done">되돌림</span> <span class="hint">(${esc(when(rcheck.reverted.at))}) 복원 ${rcheck.reverted.restored.length}개, 삭제 ${rcheck.reverted.removed.length}개</span>`;
+    return;
+  }
+  const issueCell = (issue) => (issue ? `<span style="color:var(--bad)">${esc(issue)}</span>` : '');
+  const fileRows = check.files.map((f) => `<tr><td>${esc(f.status)}</td><td>${esc(f.path)}</td><td>${issueCell(f.issue)}</td></tr>`).join('')
+    + (check.metas || []).map((m) => `<tr><td class="hint">meta</td><td class="hint">${esc(m)}</td><td class="hint">함께 커밋</td></tr>`).join('');
+  const ACTION = { restore: '복원', recreate: '다시 생성', delete: '삭제' };
+  const revertRows = rcheck.files.map((f) => `<tr><td>${esc(ACTION[f.action] || f.action)}</td><td>${esc(f.path)}</td><td>${issueCell(f.issue)}</td></tr>`).join('')
+    + (rcheck.metas || []).map((m) => `<tr><td class="hint">삭제</td><td class="hint">${esc(m)}</td><td class="hint">Unity meta</td></tr>`).join('');
   panel.innerHTML = `
-    <div class="row"><b>수락하고 커밋</b><span class="hint">이 실행이 바꾼 파일만 커밋합니다. push는 하지 않습니다.</span></div>
+    <div class="row"><b>수락하고 커밋</b><span class="hint">이 실행이 바꾼 파일과 Unity가 만든 .meta만 커밋합니다. push는 하지 않습니다.</span></div>
     ${hasHumanTasks ? '<div class="hint" style="color:var(--warn)">⚠ 리뷰 요점에 "사람이 할 일"이 있습니다. 처리했는지 확인한 뒤 커밋하세요.</div>' : ''}
-    ${check.files.length ? `<table>${fileRows}</table>` : ''}
+    ${fileRows ? `<table>${fileRows}</table>` : ''}
     ${check.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join('')}
     <div class="row" style="margin-top:8px"><input id="commitMsg" style="flex:1; min-width:240px; border:1px solid var(--line); border-radius:6px; padding:5px 8px; background:var(--bg)" value="${esc(check.suggestedMessage)}">
       <button class="primary" id="commitBtn" ${check.ok ? '' : 'disabled'}>수락하고 커밋</button></div>
-    <div class="hint">커밋 메시지 끝에 <code>Jevcode-Run: ${esc(run.id)}</code>가 붙습니다.</div>`;
+    <div class="hint">커밋 메시지 끝에 <code>Jevcode-Run: ${esc(run.id)}</code>가 붙습니다.</div>
+    <div style="margin-top:12px; border-top:1px dashed var(--line); padding-top:10px">
+      <div class="row"><b>거절하고 되돌리기</b><span class="hint">이 실행이 바꾼 것만 run 전 상태로 되돌립니다. 이후에 고친 파일은 건드리지 않습니다.</span></div>
+      ${revertRows ? `<table>${revertRows}</table>` : ''}
+      ${rcheck.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join('')}
+      <div class="row" style="margin-top:8px"><button id="revertBtn" ${rcheck.ok ? '' : 'disabled'}>거절하고 되돌리기</button>
+        <span class="hint">원인과 설명 가능 여부를 먼저 고르세요.</span></div>
+    </div>`;
+  const revertBtn = document.getElementById('revertBtn');
+  if (!rcheck.ok) revertBtn.style.opacity = '0.5';
+  revertBtn.onclick = async () => {
+    state.decision = 'rejected';
+    paint();
+    if (!(await saveReview())) return;
+    const result = await api(`/api/runs/${encodeURIComponent(run.id)}/revert`, { method: 'POST', body: '{}' });
+    if (!result.ok) {
+      hint.textContent = '리뷰는 저장했지만 되돌리지 못했습니다.';
+      panel.insertAdjacentHTML('beforeend', result.check.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join(''));
+      return;
+    }
+    await goNext();
+  };
   const commitBtn = document.getElementById('commitBtn');
   if (!check.ok) commitBtn.style.opacity = '0.5';
   commitBtn.onclick = async () => {
