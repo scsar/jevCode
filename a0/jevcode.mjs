@@ -473,6 +473,10 @@ async function cmdRun(argv) {
     // hidden until the run is reviewed (design 10.2). Errors are shown because they need fixing.
     const failed = shadow.filter((d) => d.error);
     console.log(` shadow: ${shadow.length - failed.length}/${shadow.length} recorded (hidden until reviewed)${failed.length ? `  ! ${failed.map(formatDecision).join(' | ')}` : ''}`);
+    if (failed.some((d) => /HTTP 401/.test(d.error))) {
+      console.log('   ! jev 인증 실패: TYPESAFE_API_KEY를 확인하세요. 키를 바꿨다면 새 터미널에서 실행해야 적용됩니다.'
+        + ` 이 run은 나중에 jevcode decide ${id} --provider jev로 채울 수 있습니다.`);
+    }
   } finally {
     release();
     fs.rmSync(runTemp, { recursive: true, force: true });

@@ -155,6 +155,16 @@ function renderDiff(patch) {
   }).join('')}</pre></div>`;
 }
 
+// Latest successful answer per provider; an error is shown only when a provider never succeeded.
+function latestPerProvider(decisions) {
+  const byProvider = new Map();
+  for (const d of decisions) {
+    const prev = byProvider.get(d.provider);
+    if (!prev || !d.error || prev.error) byProvider.set(d.provider, d);
+  }
+  return [...byProvider.values()];
+}
+
 function renderDecision(d) {
   if (d.error) return `<tr><td>${esc(d.provider)}</td><td colspan="3" class="hint">오류: ${esc(d.error)}</td><td>${esc(when(d.at))}</td></tr>`;
   const a = d.answers || {};
@@ -212,7 +222,7 @@ async function openRun(id) {
     ${run.denials.length ? `<section><h2>거부된 동작 (${run.denials.length})</h2><table>${run.denials.map((d) => `<tr><td>${esc(d.via)}</td><td><pre>${esc(d.detail)}</pre></td></tr>`).join('')}</table></section>` : ''}
     <section><h2>Shadow 판단 (실행에는 영향 없음)</h2>
       ${review
-        ? `<table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${decisions.map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table>`
+        ? `<table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${latestPerProvider(decisions).map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table>`
         : `<p class="hint">리뷰를 저장한 뒤에 공개됩니다(${decisions.length}건 기록됨). 리뷰가 판단 제공자를 채점하는 정답이므로, 먼저 보면 판정이 끌려갑니다.</p>`}</section>
     <p class="hint">기록 위치: ${esc(dir)}${hasRawEvents ? ' · 원시 이벤트 보존됨' : ''}</p>`;
 
