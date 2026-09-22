@@ -151,6 +151,8 @@ Codex 사용 한도가 걸리면 같은 명령을 Claude Code(`claude -p`)로 �
 - **Claude run의 격리는 Codex보다 약합니다.** Windows에서는 Claude에 OS 샌드박스가 없습니다. 그래서 **실행 도구를 전혀 주지 않습니다.** `--restricted --tools Read Edit Write Glob Grep`(셸·웹 없음, 사용자·프로젝트 설정 무시, 파일 도구는 작업 폴더로 제한), `--strict-mcp-config`, `--no-session-persistence`, `--disable-slash-commands`, 자동 메모리 끔. 에이전트가 작업 중에 테스트를 돌릴 수 없고, 검증은 run이 끝난 뒤 jevcode가 Codex 샌드박스(한도와 무관)에서 한 번 합니다.
 - **옵션:** `--agent codex|claude`로 강제(강제하면 자동 전환 안 함), `--no-fallback`으로 도중 전환 끄기, `--claude-model <모델>` 또는 환경 변수 `JEVCODE_CLAUDE_MODEL`(없으면 Claude Code 기본 모델).
 - **Codex CLI 의존:** 검증의 격리(`codex sandbox`)는 Codex 모델을 부르지 않아 한도와 무관하지만 Codex CLI 프로그램이 있어야 합니다. run마다 Codex CLI 버전을 기록하고, A-gate 검증 버전(0.155.1)과 다르면 시작할 때 경고합니다. Codex CLI가 없으면 Claude로 진행하되 검증은 격리 없이 돌리지 않고 `unknown`으로 남깁니다.
+- **Claude run에 맞는 일:** 작업 중에 테스트를 돌릴 수 없으므로, 여러 파일을 한 번에 고치는 큰 작업은 Codex 한도가 풀릴 때까지 기다리는 편이 낫습니다. 컴파일되지 않는 결과가 나와도 에이전트가 알아차리지 못하고, 검증은 run이 끝난 뒤 한 번만 하기 때문입니다. 한도가 아깝다면 `--agent codex`로 미루거나 `--no-fallback`으로 자동 전환을 끄세요.
+- **한도 경고와 한도 도달은 다릅니다.** Claude는 사용률이 높아지면 경고(`allowed_warning`)를 보냅니다. 경고는 기록만 하고(`rateLimitWarnings`), 실제 거부(`rejected`)나 한도 메시지일 때만 한도로 기록합니다.
 - **평가:** 실행기가 다르고 격리도 다르므로 Claude run은 Codex run과 **따로 봅니다.** `jevcode stats`에 실행기별 개수가 나오고, 리뷰 화면에 실행기와 자동 전환 여부가 표시됩니다.
 
 ## 격리 조건과 알려진 빈틈

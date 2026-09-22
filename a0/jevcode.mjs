@@ -261,7 +261,7 @@ function claudeCommand(claude, model) {
 
 // Same shape as summarizeEvents, from `claude -p --output-format stream-json` lines.
 function summarizeClaudeEvents(eventsText, stderrText) {
-  const s = { turnCompleted: false, usage: null, commands: [], messages: [], errors: [], denials: [], quotaCandidates: [], tools: [], result: null, rateLimit: null };
+  const s = { turnCompleted: false, usage: null, commands: [], messages: [], errors: [], denials: [], quotaCandidates: [], tools: [], result: null, rateLimit: null, rateLimitWarnings: 0 };
   for (const line of eventsText.split('\n')) {
     let e;
     try { e = JSON.parse(line); } catch { continue; }
@@ -271,8 +271,15 @@ function summarizeClaudeEvents(eventsText, stderrText) {
         else if (c.type === 'text' && c.text) s.messages.push(c.text);
       }
     } else if (e.type === 'rate_limit_event') {
-      s.rateLimit = e.rate_limit_info || null;
-      if (s.rateLimit && s.rateLimit.status !== 'allowed') s.quotaCandidates.push(`rate_limit_event: ${JSON.stringify(s.rateLimit).slice(0, 280)}`);
+      // `allowed_warning` only says the window is filling up (utilization past a threshold); treating
+      // it as a limit marked unrelated failures as quota. Only a refusal counts.
+      const info = e.rate_limit_info || null;
+      if (info) s.rateLimit = info;
+      if (info && info.status !== 'allowed' && info.status !== 'allowed_warning') {
+        s.quotaCandidates.push(`rate_limit_event: ${JSON.stringify(info).slice(0, 280)}`);
+      } else if (info && info.status === 'allowed_warning') {
+        s.rateLimitWarnings = (s.rateLimitWarnings || 0) + 1;
+      }
     } else if (e.type === 'result') {
       s.result = e;
       s.turnCompleted = e.subtype === 'success' && !e.is_error;
@@ -814,6 +821,7 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, tim
       denials: ev.denials, errors: ev.errors.slice(0, 5),
       usage: ev.usage, quotaSignalCandidates: ev.quotaCandidates,
       ...(limit ? { usageLimitUntil: limit.until } : {}),
+      ...(ev.rateLimitWarnings ? { rateLimitWarnings: ev.rateLimitWarnings } : {}),
       ...(autoFallback ? { autoFallback: 'claude' } : {}),
       verification: verification.map(({ tail, ...v }) => v), verifiedTreeChanged,
       launcher: state && { terminatedBy: state.terminatedBy, activeProcesses: state.activeProcesses, mainExitCode: state.mainExitCode },
