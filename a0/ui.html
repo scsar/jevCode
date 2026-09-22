@@ -195,18 +195,29 @@ function extractTests(chunks) {
   return out;
 }
 
-// Pulls a markdown section such as "### 가정" or "가정:" out of the agent's final message.
+// Pulls a section out of the agent's final message. Handles a heading with a body below
+// ("### 가정" / "**가정**" + list) and the inline form ("**가정:** text", "가정: text").
 function extractSection(message, title) {
   const lines = (message || '').split('\n');
-  const start = lines.findIndex((l) => new RegExp(`^\\s*(#{1,6}\\s*)?\\**${title}\\**\\s*:?\\s*$`).test(l));
-  if (start < 0) return null;
-  const body = [];
-  for (const l of lines.slice(start + 1)) {
-    if (/^\s*#{1,6}\s/.test(l) || /^\s*[`*>-]*\s*Commit:/i.test(l)) break;
-    body.push(l);
+  const heading = new RegExp(`^\\s*(#{1,6}\\s*)?\\**${title}\\**\\s*:?\\s*\\**\\s*$`);
+  const inline = new RegExp(`^\\s*[-*>]*\\s*\\**${title}\\s*:\\s*\\**\\s*(.+)$`);
+  const stop = (l) => /^\s*#{1,6}\s/.test(l) || /^\s*[`*>-]*\s*Commit:/i.test(l);
+  for (let i = 0; i < lines.length; i++) {
+    if (heading.test(lines[i])) {
+      const body = [];
+      for (const l of lines.slice(i + 1)) { if (stop(l)) break; body.push(l); }
+      const text = body.join('\n').trim();
+      if (text) return text;
+    }
+    const m = lines[i].match(inline);
+    if (m) {
+      // Inline form: this line plus any directly following non-blank lines.
+      const body = [m[1]];
+      for (const l of lines.slice(i + 1)) { if (!l.trim() || stop(l)) break; body.push(l); }
+      return body.join('\n').trim();
+    }
   }
-  const text = body.join('\n').trim();
-  return text || null;
+  return null;
 }
 
 function renderReviewPoints(run, chunks) {
