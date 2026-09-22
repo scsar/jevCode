@@ -220,15 +220,64 @@ function extractSection(message, title) {
   return null;
 }
 
+// Changed existing files first (they carry the risk), then deletions, then new files; original indexes.
+function deltaOrder(delta) {
+  const rank = (s) => (s.startsWith('M') || s.startsWith('R') ? 0 : s.startsWith('D') ? 1 : 2);
+  return delta.map((d, i) => i).sort((a, b) => rank(delta[a].status) - rank(delta[b].status) || a - b);
+}
+
+// Public API lines added/removed in non-test C# files, grouped per member: added, changed, removed.
+function extractPublicApi(chunks) {
+  const members = new Map();
+  for (const [file, chunk] of chunks) {
+    if (!file.endsWith('.cs') || /tests?[\\/]/i.test(file)) continue;
+    for (const raw of chunk.split('\n')) {
+      if (!/^[+-]/.test(raw) || /^(\+\+\+|---) /.test(raw)) continue;
+      const line = raw.slice(1).trim();
+      if (!/^public\b/.test(line)) continue;
+      const type = line.match(/\b(class|record|struct|interface|enum)\s+(\w+)/);
+      const call = line.match(/(\w+)\s*(<[^>]*>)?\s*\(/);
+      const member = line.match(/(\w+)\s*(\{|=>|=|;)/);
+      const name = type ? type[2] : call ? call[1] : member ? member[1] : null;
+      if (!name) continue;
+      const key = `${file}|${name}`;
+      const entry = members.get(key) || { file, name, signature: '', added: false, removed: false };
+      if (raw[0] === '+') { entry.added = true; entry.signature = line.split(/\s*(\{|=>)/)[0].slice(0, 120); } else { entry.removed = true; if (!entry.signature) entry.signature = line.split(/\s*(\{|=>)/)[0].slice(0, 120); }
+      members.set(key, entry);
+    }
+  }
+  const all = [...members.values()];
+  return {
+    added: all.filter((m) => m.added && !m.removed),
+    changed: all.filter((m) => m.added && m.removed),
+    removed: all.filter((m) => !m.added && m.removed),
+  };
+}
+
 function renderReviewPoints(run, chunks) {
   const assumptions = extractSection(run.lastMessage, '가정');
   const proposals = extractSection(run.lastMessage, '제안');
+  const behavior = extractSection(run.lastMessage, '기존 동작 변경');
+  const api = extractPublicApi(chunks);
+  const apiRows = (items) => `<table>${items.map((m) => `<tr><td><code>${esc(m.signature)}</code></td><td class="hint">${esc(m.file.split('/').pop())}</td></tr>`).join('')}</table>`;
+  const behaviorBlock = behavior == null
+    ? '<p class="hint">섹션 없음 (AGENTS.md 규칙 추가 전 run이거나 누락)</p>'
+    : /^\s*(없음|none|n\/a)\.?\s*$/i.test(behavior)
+      ? '<p class="done">없음 — 기존 동작은 그대로다</p>'
+      : `<div class="warn-box" style="color:var(--text); border-color:var(--warn)"><pre>${esc(behavior)}</pre></div>`;
   const tests = extractTests(chunks);
   const added = tests.filter((t) => t.change === 'added');
   const removed = tests.filter((t) => t.change === 'removed');
   const testList = (items) => `<table>${items.map((t) => `<tr><td>${esc(t.name)}${t.kind === 'Theory' ? ` <span class="hint">(Theory${t.cases ? `, ${t.cases}케이스` : ''})</span>` : ''}</td><td class="hint">${esc(t.file.split('/').pop())}</td></tr>`).join('')}</table>`;
   return `<section class="points"><h2>리뷰 요점</h2>
-    <div class="row"><b>가정</b><span class="hint">실행기가 임의로 정한 부분. 기획과 맞는지 판단할 곳</span></div>
+    <div class="row"><b>기존 동작 변경</b><span class="hint">가장 위험한 부분. "없음"이면 새 코드만 추가된 것</span></div>
+    ${behaviorBlock}
+    <div class="row" style="margin-top:10px"><b>공개 API</b><span class="hint">다른 코드가 쓰게 될 이름과 모양</span></div>
+    ${api.removed.length ? `<div class="warn-box"><b>⚠ 삭제된 공개 API ${api.removed.length}개</b> — 다른 코드가 쓰고 있지 않은지 확인하세요.${apiRows(api.removed)}</div>` : ''}
+    ${api.changed.length ? `<div class="hint">변경 ${api.changed.length}개</div>${apiRows(api.changed)}` : ''}
+    ${api.added.length ? `<div class="hint">추가 ${api.added.length}개</div>${apiRows(api.added)}` : ''}
+    ${api.added.length + api.changed.length + api.removed.length ? '' : '<p class="hint">공개 API 변화 없음</p>'}
+    <div class="row" style="margin-top:10px"><b>가정</b><span class="hint">실행기가 임의로 정한 부분. 기획과 맞는지 판단할 곳</span></div>
     ${assumptions ? `<div class="assume"><pre>${esc(assumptions)}</pre></div>` : '<p class="hint">가정 섹션 없음</p>'}
     ${proposals ? `<div class="row" style="margin-top:10px"><b>제안</b><span class="hint">범위 밖이라 고치지 않은 것. 다음 run 후보</span></div><div class="assume"><pre>${esc(proposals)}</pre></div>` : ''}
     <div class="row" style="margin-top:10px"><b>테스트</b><span class="hint">이름이 곧 동작 명세. 요청한 규칙을 다 덮는지 확인</span></div>
@@ -306,7 +355,7 @@ async function openRun(id) {
       ${verificationTails[i] ? `<div class="scroll"><pre>${esc(verificationTails[i])}</pre></div>` : ''}`).join('') : '<span class="hint">설정된 검증 명령 없음</span>'}
       ${run.verifiedTreeChanged ? '<p class="hint">⚠ 검증이 작업 트리를 바꿨습니다. 결과는 검증 전 상태 기준입니다.</p>' : ''}</section>
     <section><h2>변경 (${run.delta.length}파일) <span class="hint">· 파일을 누르면 그 파일의 변경을 보여 줍니다</span></h2>
-      <table>${run.delta.map((d, i) => `<tr class="file-row" data-file="${i}"><td>${esc(d.status)}</td><td>${esc(d.path)}</td><td>+${d.add ?? '?'} −${d.del ?? '?'}</td></tr>`).join('')}</table>
+      <table>${deltaOrder(run.delta).map((i) => { const d = run.delta[i]; return `<tr class="file-row" data-file="${i}"><td>${esc(d.status)}</td><td>${esc(d.path)}</td><td>+${d.add ?? '?'} −${d.del ?? '?'}</td></tr>`; }).join('')}</table>
       <div style="margin-top:8px" id="fileDiff">${run.delta.length ? '' : renderDiff(patch)}</div></section>
     <section><h2>실행한 명령 (${run.commands.length})</h2>
       <table>${run.commands.map((c) => `<tr><td>${c.exit === 0 ? '✓' : `<span style="color:var(--bad)">exit ${esc(c.exit)}</span>`}</td><td><pre>${esc(c.command)}</pre></td></tr>`).join('') || '<tr><td class="hint">없음</td></tr>'}</table></section>
@@ -329,7 +378,7 @@ async function openRun(id) {
       : `<span class="hint">${patch ? '이 파일의 diff가 없습니다 (바이너리이거나 잘린 diff).' : 'diff 파일이 없습니다.'}</span>`;
   };
   deltaRows.forEach((row) => row.onclick = () => showFile(Number(row.dataset.file)));
-  if (run.delta.length) showFile(0);
+  if (run.delta.length) showFile(deltaOrder(run.delta)[0]);
 
   const state = { decision: review?.decision || null, explainable: typeof review?.explainable === 'boolean' ? review.explainable : null };
   const causeEl = document.getElementById('cause');
