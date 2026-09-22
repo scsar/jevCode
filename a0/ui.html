@@ -55,6 +55,9 @@
   .scroll { max-height: 420px; overflow: auto; background: var(--soft); border-radius: 6px; padding: 8px; }
   .diff .add { background: var(--add-bg); } .diff .del { background: var(--del-bg); } .diff .hunk { background: var(--hunk); color: var(--muted); }
   .diff .file { font-weight: 700; margin-top: 8px; }
+  .assume { border-left: 3px solid var(--accent); padding: 4px 10px; background: var(--soft); border-radius: 4px; }
+  .warn-box { border: 1px solid var(--bad); border-radius: 6px; padding: 8px 10px; margin: 6px 0; color: var(--bad); }
+  .warn-box table { color: var(--text); }
   .file-row { cursor: pointer; }
   .file-row:hover td { background: var(--soft); }
   .file-row.sel td { background: var(--soft); font-weight: 600; }
@@ -168,6 +171,61 @@ function splitPatch(patch) {
   return chunks;
 }
 
+// xUnit tests touched by the run: added/changed ([Fact]/[Theory] + method on added lines) and removed.
+function extractTests(chunks) {
+  const out = [];
+  for (const [file, chunk] of chunks) {
+    if (!/tests?[\\/]|tests?\.cs$/i.test(file) || !file.endsWith('.cs')) continue;
+    let attr = null;
+    for (const raw of chunk.split('\n')) {
+      if (/^(diff --git|index |--- |\+\+\+ |@@)/.test(raw)) continue;
+      const sign = raw[0] === '+' || raw[0] === '-' ? raw[0] : ' ';
+      const line = raw.slice(1).trim();
+      const a = line.match(/^\[(Fact|Theory)\b/);
+      if (a) { attr = { kind: a[1], sign, cases: 0 }; continue; }
+      if (attr && /^\[InlineData\b/.test(line)) { attr.cases++; continue; }
+      const m = attr && line.match(/^(?:public\s+)?(?:async\s+)?(?:void|Task)\s+(\w+)\s*\(/);
+      if (m) {
+        const change = sign === '-' ? 'removed' : sign === '+' || attr.sign === '+' ? 'added' : null;
+        if (change) out.push({ file, name: m[1], kind: attr.kind, cases: attr.cases, change });
+        attr = null;
+      } else if (attr && line && !line.startsWith('[')) attr = null;
+    }
+  }
+  return out;
+}
+
+// Pulls a markdown section such as "### 가정" or "가정:" out of the agent's final message.
+function extractSection(message, title) {
+  const lines = (message || '').split('\n');
+  const start = lines.findIndex((l) => new RegExp(`^\\s*(#{1,6}\\s*)?\\**${title}\\**\\s*:?\\s*$`).test(l));
+  if (start < 0) return null;
+  const body = [];
+  for (const l of lines.slice(start + 1)) {
+    if (/^\s*#{1,6}\s/.test(l) || /^\s*[`*>-]*\s*Commit:/i.test(l)) break;
+    body.push(l);
+  }
+  const text = body.join('\n').trim();
+  return text || null;
+}
+
+function renderReviewPoints(run, chunks) {
+  const assumptions = extractSection(run.lastMessage, '가정');
+  const proposals = extractSection(run.lastMessage, '제안');
+  const tests = extractTests(chunks);
+  const added = tests.filter((t) => t.change === 'added');
+  const removed = tests.filter((t) => t.change === 'removed');
+  const testList = (items) => `<table>${items.map((t) => `<tr><td>${esc(t.name)}${t.kind === 'Theory' ? ` <span class="hint">(Theory${t.cases ? `, ${t.cases}케이스` : ''})</span>` : ''}</td><td class="hint">${esc(t.file.split('/').pop())}</td></tr>`).join('')}</table>`;
+  return `<section class="points"><h2>리뷰 요점</h2>
+    <div class="row"><b>가정</b><span class="hint">실행기가 임의로 정한 부분. 기획과 맞는지 판단할 곳</span></div>
+    ${assumptions ? `<div class="assume"><pre>${esc(assumptions)}</pre></div>` : '<p class="hint">가정 섹션 없음</p>'}
+    ${proposals ? `<div class="row" style="margin-top:10px"><b>제안</b><span class="hint">범위 밖이라 고치지 않은 것. 다음 run 후보</span></div><div class="assume"><pre>${esc(proposals)}</pre></div>` : ''}
+    <div class="row" style="margin-top:10px"><b>테스트</b><span class="hint">이름이 곧 동작 명세. 요청한 규칙을 다 덮는지 확인</span></div>
+    ${removed.length ? `<div class="warn-box"><b>⚠ 삭제되거나 이름이 바뀐 테스트 ${removed.length}개</b> — 통과시키려고 테스트를 지운 건 아닌지 확인하세요.${testList(removed)}</div>` : ''}
+    ${added.length ? `<div class="hint">추가·변경 ${added.length}개</div>${testList(added)}` : '<p class="hint">추가·변경된 테스트 없음</p>'}
+  </section>`;
+}
+
 function renderDiff(patch) {
   if (!patch) return '<span class="hint">변경 없음 또는 diff 파일 없음</span>';
   return `<div class="scroll diff"><pre>${patch.split('\n').map((l) => {
@@ -229,6 +287,7 @@ async function openRun(id) {
       ${run.quotaSignalCandidates?.length ? `<div class="row"><span class="label">한도 신호?</span><pre>${esc(run.quotaSignalCandidates.join('\n'))}</pre></div>` : ''}
       ${run.errors?.length ? `<div class="row"><span class="label">오류</span><pre>${esc(run.errors.join('\n'))}</pre></div>` : ''}
     </section>
+    ${renderReviewPoints(run, splitPatch(patch))}
     <section><h2>작업</h2><pre>${esc(run.task)}</pre></section>
     <section><h2>실행기의 마지막 메시지 (검증되지 않은 주장)</h2><div class="claim"><pre>${esc(run.lastMessage || '(없음)')}</pre></div></section>
     <section><h2>검증</h2>${run.verification.length ? run.verification.map((v, i) => `
