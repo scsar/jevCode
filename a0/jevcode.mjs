@@ -7,7 +7,7 @@
 // providers (decisions.mjs) about the run. No dependencies, Windows only.
 //
 //   jevcode init --verify "npm test" [--verify ...] [--timeout-min 30]
-//   jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"
+//   jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] [--allow-pending] [--allow-rejected] "task"
 //   jevcode log [n] | show <id> | stats | eval
 //   jevcode review <id> accept|reject [--cause <cause>] [--explainable yes|no] [reason]
 //   jevcode ui                      (local review screen, see ui.mjs)
@@ -382,6 +382,27 @@ function pendingRuns(repo) {
   return pending;
 }
 
+// A task identical to one already rejected for the agent's work (a re-pasted old command) stops a
+// new run unless --allow-rejected. Runs rejected for operational causes (quota, timeout, sandbox,
+// tooling) are expected to be rerun as-is and do not count. Nothing is passed to the agent.
+const RERUNNABLE_CAUSES = new Set(['quota_or_rate_limit', 'timeout_or_cancel', 'sandbox_denial', 'environment_or_tooling']);
+const normalizeTask = (text) => text.replace(/\s+/g, ' ').trim();
+
+function rejectedTwins(repo, task) {
+  const want = normalizeTask(task);
+  const reviews = new Map(readJsonl(REVIEWS).map((v) => [v.id, v]));
+  const twins = [];
+  for (const r of readJsonl(RUNS)) {
+    if (r.repo !== repo) continue;
+    const review = reviews.get(r.id);
+    if (review?.decision !== 'rejected' || RERUNNABLE_CAUSES.has(review.cause)) continue;
+    const promptFile = path.join(ROOT, 'runs', r.id, 'prompt.txt');
+    const text = fs.existsSync(promptFile) ? fs.readFileSync(promptFile, 'utf8') : r.task;
+    if (normalizeTask(text || '') === want) twins.push({ id: r.id, cause: review.cause, reason: review.reason || '' });
+  }
+  return twins;
+}
+
 // ---------------------------------------------------------------- local servers + Unity check
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -484,9 +505,9 @@ function cmdInit(argv) {
 }
 
 async function cmdRun(argv) {
-  const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value', 'allow-pending': 'bool' });
+  const { opts, rest } = parseArgs(argv, { tag: 'value', model: 'value', 'timeout-min': 'value', 'prompt-file': 'value', 'allow-pending': 'bool', 'allow-rejected': 'bool' });
   const task = opts['prompt-file'] ? fs.readFileSync(opts['prompt-file'], 'utf8') : rest.join(' ');
-  if (!task.trim()) die('usage: jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] "task"');
+  if (!task.trim()) die('usage: jevcode run [--tag t] [--model m] [--timeout-min n] [--prompt-file f] [--allow-pending] [--allow-rejected] "task"');
 
   const repo = repoRoot();
   const cfg = readConfig()[repoKey(repo)] || { verify: [], timeoutMin: 30 };
@@ -502,6 +523,15 @@ async function cmdRun(argv) {
 
   ensureLauncher();
   const codex = codexExe();
+  const twins = rejectedTwins(repo, task);
+  if (twins.length && !opts['allow-rejected']) {
+    console.error('jevcode: 이 명령은 이전에 거절된 run과 글자까지 같습니다. 예전 명령을 다시 붙여 넣은 것 아닌지 확인하세요.');
+    for (const t of twins) console.error(`  ${t.id}  거절 (${t.cause || '-'})${t.reason ? `: ${t.reason.replace(/\s+/g, ' ').slice(0, 120)}` : ''}`);
+    console.error('  같은 명령을 일부러 다시 돌리려면 --allow-rejected');
+    fs.rmSync(runDir, { recursive: true, force: true });
+    fs.rmSync(runTemp, { recursive: true, force: true });
+    process.exit(1);
+  }
   const pending = pendingRuns(repo);
   if (pending.length && !opts['allow-pending']) {
     console.error('jevcode: 정리되지 않은 run이 있습니다. 리뷰 화면(jevcode ui)에서 먼저 처리하세요.');
