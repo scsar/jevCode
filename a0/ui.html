@@ -140,7 +140,7 @@ async function loadList(selectId) {
       <div class="meta">${badge(OUTCOME[r.executionOutcome] || [r.executionOutcome, 'b-muted'])}${badge(VERIFY[r.verificationStatus] || [r.verificationStatus, 'b-muted'])}
         ${r.policyStatus === 'violated' ? badge(['정책 위반', 'b-bad']) : ''}${reviewed}
         <span>${esc(r.repo)}</span>${r.tag ? `<span>#${esc(r.tag)}</span>` : ''}<span>${r.files}파일</span>
-        ${pr != null ? `<span title="shadow 판단 리뷰 우선순위">◆${PRIORITY[Math.round(pr)] || pr}</span>` : ''}
+        ${pr != null && r.review ? `<span title="shadow 판단 리뷰 우선순위">◆${PRIORITY[Math.round(pr)] || pr}</span>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">${filter === 'pending' ? '리뷰할 실행이 없습니다.' : '실행 기록이 없습니다.'}</div>`;
   document.querySelectorAll('.item').forEach((el) => el.onclick = () => openRun(el.dataset.id));
@@ -180,7 +180,7 @@ async function openRun(id) {
       <div class="row"><span class="label">판정</span>
         <button data-decision="accepted">수락</button><button data-decision="rejected">거절</button></div>
       <div class="row"><span class="label">원인</span>
-        <select id="cause">${meta.causes.map((c) => `<option value="${c}">${c} — ${esc(meta.causeText[c])}</option>`).join('')}</select></div>
+        <select id="cause"><option value="">— 직접 선택 —</option>${meta.causes.map((c) => `<option value="${c}">${c} — ${esc(meta.causeText[c])}</option>`).join('')}</select></div>
       <div class="row"><span class="label" style="min-width:auto">이 화면만으로 결과와 원인을 설명할 수 있었나?</span>
         <button data-explain="true">예</button><button data-explain="false">아니오</button></div>
       <textarea id="note" placeholder="메모 (선택)"></textarea>
@@ -211,12 +211,15 @@ async function openRun(id) {
       <table>${run.commands.map((c) => `<tr><td>${c.exit === 0 ? '✓' : `<span style="color:var(--bad)">exit ${esc(c.exit)}</span>`}</td><td><pre>${esc(c.command)}</pre></td></tr>`).join('') || '<tr><td class="hint">없음</td></tr>'}</table></section>
     ${run.denials.length ? `<section><h2>거부된 동작 (${run.denials.length})</h2><table>${run.denials.map((d) => `<tr><td>${esc(d.via)}</td><td><pre>${esc(d.detail)}</pre></td></tr>`).join('')}</table></section>` : ''}
     <section><h2>Shadow 판단 (실행에는 영향 없음)</h2>
-      <table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${decisions.map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table></section>
+      ${review
+        ? `<table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${decisions.map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table>`
+        : `<p class="hint">리뷰를 저장한 뒤에 공개됩니다(${decisions.length}건 기록됨). 리뷰가 판단 제공자를 채점하는 정답이므로, 먼저 보면 판정이 끌려갑니다.</p>`}</section>
     <p class="hint">기록 위치: ${esc(dir)}${hasRawEvents ? ' · 원시 이벤트 보존됨' : ''}</p>`;
 
   const state = { decision: review?.decision || null, explainable: typeof review?.explainable === 'boolean' ? review.explainable : null };
   const causeEl = document.getElementById('cause');
-  causeEl.value = review?.cause || (run.executionOutcome === 'completed' && run.verificationStatus !== 'failed' ? 'none' : (decisions.find((d) => d.provider === 'rules')?.answers?.failure_cause?.value || 'none'));
+  // No prefill from any provider: the cause label must be the user's own call.
+  causeEl.value = review?.cause || '';
   document.getElementById('note').value = review?.reason || '';
   const paint = () => {
     document.querySelectorAll('[data-decision]').forEach((b) => b.className = b.dataset.decision === state.decision ? (state.decision === 'accepted' ? 'sel-ok' : 'sel-bad') : '');
@@ -233,6 +236,8 @@ async function openRun(id) {
   const saveReview = async () => {
     if (!state.decision) { hint.textContent = '수락 또는 거절을 선택하세요.'; return false; }
     if (state.explainable == null) { hint.textContent = '설명 가능 여부를 선택하세요.'; return false; }
+    if (state.decision === 'accepted' && !causeEl.value) causeEl.value = 'none';
+    if (!causeEl.value) { hint.textContent = '거절한 원인을 선택하세요.'; return false; }
     await api(`/api/runs/${encodeURIComponent(run.id)}/review`, { method: 'POST', body: JSON.stringify({
       decision: state.decision, cause: causeEl.value, explainable: state.explainable,
       note: document.getElementById('note').value, viewedMs: performance.now() - openedAt }) });

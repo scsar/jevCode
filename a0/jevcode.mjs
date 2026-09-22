@@ -469,7 +469,10 @@ async function cmdRun(argv) {
     const shadowState = buildState(record, verification);
     fs.writeFileSync(path.join(runDir, 'state.txt'), shadowState);
     const shadow = await runShadow({ record, state: shadowState, decisionsFile: DECISIONS });
-    console.log(` shadow: ${shadow.map(formatDecision).join('  |  ')}`);
+    // Blind review: the user's review is the ground truth for evaluating providers, so answers stay
+    // hidden until the run is reviewed (design 10.2). Errors are shown because they need fixing.
+    const failed = shadow.filter((d) => d.error);
+    console.log(` shadow: ${shadow.length - failed.length}/${shadow.length} recorded (hidden until reviewed)${failed.length ? `  ! ${failed.map(formatDecision).join(' | ')}` : ''}`);
   } finally {
     release();
     fs.rmSync(runTemp, { recursive: true, force: true });
@@ -527,7 +530,9 @@ function cmdShow(argv) {
   console.log(`\n task: ${r.task.split('\n')[0].slice(0, 200)}`);
   for (const c of r.commands) console.log(`   $ ${c.command.slice(0, 140)} -> exit ${c.exit}`);
   for (const q of r.quotaSignalCandidates || []) console.log(`   ? ${q}`);
-  for (const d of readJsonl(DECISIONS).filter((x) => x.runId === r.id)) console.log(`   ~ ${formatDecision(d)}`);
+  const decisions = readJsonl(DECISIONS).filter((x) => x.runId === r.id);
+  if (r.review) for (const d of decisions) console.log(`   ~ ${formatDecision(d)}`);
+  else if (decisions.length) console.log(`   ~ shadow: ${decisions.length} recorded (hidden until reviewed)`);
   if (r.review) console.log(` reviewed: ${r.review.decision}${r.review.cause ? ` (cause: ${r.review.cause})` : ''}${r.review.reason ? ` - ${r.review.reason}` : ''}`);
   const raw = path.join(ROOT, 'runs', r.id);
   console.log(`\n artifacts: ${raw}`);
