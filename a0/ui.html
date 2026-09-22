@@ -402,6 +402,7 @@ async function showStats() {
   const evalRows = Object.entries(s.eval).map(([name, e]) => `<tr><td>${esc(name)}</td><td>${e.reviewed}</td>
     <td>${e.brier == null ? '-' : e.brier.toFixed(3)}</td><td>${pct(e.accuracy)}</td>
     <td>${Object.entries(e.byPriority).sort().map(([lvl, v]) => `${PRIORITY[lvl] ?? lvl}: ${v.rejected}/${v.n}`).join(', ') || '-'}</td>
+    <td>${Object.entries(e.careByPriority || {}).sort().map(([lvl, v]) => `${PRIORITY[lvl] ?? lvl}: ${v.needCare}/${v.n}`).join(', ') || '-'}</td>
     <td>${pct(e.causeAgreement)} (${e.causeLabeled})</td></tr>`).join('');
   document.getElementById('statsBody').innerHTML = `
     <h3 style="margin-top:0">A0 지표</h3>
@@ -412,7 +413,8 @@ async function showStats() {
       <div>리뷰 완료<b>${s.reviewed} / ${s.runs}</b><span class="goal">라벨이 Jev 평가의 정답</span></div>
     </div>
     <h3>판단 계층 평가 (설계 10.2)</h3>
-    <table><tr><th>제공자</th><th>리뷰됨</th><th>Brier ↓</th><th>정확도</th><th>우선순위별 거절</th><th>원인 일치</th></tr>${evalRows || '<tr><td colspan="6" class="hint">아직 없음</td></tr>'}</table>
+    <table><tr><th>제공자</th><th>리뷰됨</th><th>Brier ↓</th><th>정확도</th><th>우선순위별 거절</th><th title="자동 추정: 거절, 설명 불가, 긴 리뷰, 곧바로 같은 파일을 다시 고친 run 중 하나">우선순위별 꼼꼼 필요 (참고)</th><th>원인 일치</th></tr>${evalRows || '<tr><td colspan="7" class="hint">아직 없음</td></tr>'}</table>
+    <p class="hint">"꼼꼼 필요"는 추가 입력 없이 기록에서 추정한 참고 지표입니다(거절 · 설명 불가 · 중앙값 2배 이상 리뷰 · 이후 3개 run 안에 같은 파일을 retry/fix). 판정 기준 E1–E4에는 쓰지 않습니다.</p>
     <p class="hint">표본이 작으면 방향성만 봅니다.</p>`;
   document.getElementById('statsDialog').showModal();
 }

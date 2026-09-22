@@ -586,6 +586,7 @@ function cmdEval() {
     console.log(`${name}: reviewed runs ${r.reviewed}`);
     console.log(`  completion  brier ${r.brier == null ? '-' : r.brier.toFixed(3)} (lower is better), accuracy@0.5 ${pct(r.accuracy)}`);
     console.log(`  priority    ${Object.entries(r.byPriority).sort().map(([lvl, v]) => `L${lvl}: ${v.rejected}/${v.n} rejected`).join(', ') || '-'}`);
+    console.log(`  care (참고) ${Object.entries(r.careByPriority || {}).sort().map(([lvl, v]) => `L${lvl}: ${v.needCare}/${v.n} needed care`).join(', ') || '-'}`);
     console.log(`  cause       agreement ${pct(r.causeAgreement)} on ${r.causeLabeled} labeled`);
   }
   if (!Object.keys(report).length) console.log('no decisions yet');

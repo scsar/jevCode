@@ -156,9 +156,35 @@ export function formatDecision(d) {
   return `${d.provider}: priority=${a.review_priority?.value ?? '-'} completion=${pct(a.completion?.value)} cause=${a.failure_cause?.value ?? '-'}${d.provider === 'rules' ? '' : ` (${d.latencyMs}ms)`}`;
 }
 
+// Exploratory label (not part of the pre-registered E1–E4): did a run need a careful look?
+// Derived only from behaviour already recorded, so it costs the user no extra input.
+//   rejected | explainable === false | review took >= 2x the median (needs >= 3 timed reviews)
+//   | one of the next 3 runs in the same repo is tagged retry/fix and touches the same files
+export function needCareSignals(runs, reviewById) {
+  const times = [...reviewById.values()].map((r) => r.viewedMs).filter((ms) => typeof ms === 'number').sort((a, b) => a - b);
+  const median = times.length >= 3 ? times[Math.floor(times.length / 2)] : null;
+  const ordered = [...runs].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  const result = new Map();
+  ordered.forEach((run, i) => {
+    const review = reviewById.get(run.id);
+    if (!review) return;
+    const files = new Set(run.delta.map((d) => d.path));
+    const followUp = ordered.slice(i + 1).filter((r) => r.repo === run.repo).slice(0, 3)
+      .some((r) => ['retry', 'fix'].includes(r.tag) && r.delta.some((d) => files.has(d.path)));
+    const reasons = [];
+    if (review.decision === 'rejected') reasons.push('rejected');
+    if (review.explainable === false) reasons.push('not-explainable');
+    if (median !== null && typeof review.viewedMs === 'number' && review.viewedMs >= 2 * median) reasons.push('long-review');
+    if (followUp) reasons.push('follow-up-fix');
+    result.set(run.id, reasons);
+  });
+  return result;
+}
+
 // Compares each provider's latest answers with the user's reviews (accepted=1, rejected=0).
 export function evaluate(runs, reviews, decisions) {
   const reviewById = new Map(reviews.map((r) => [r.id, r]));
+  const care = needCareSignals(runs, reviewById);
   const latest = new Map();
   for (const d of decisions) {
     if (d.questionsVersion !== QUESTIONS_VERSION || d.error) continue;
@@ -182,7 +208,15 @@ export function evaluate(runs, reviews, decisions) {
     }
     const labeled = rows.filter((x) => x.review.cause);
     const causeAgreement = labeled.length ? labeled.filter((x) => x.d.answers.failure_cause?.value === x.review.cause).length / labeled.length : null;
-    report[name] = { reviewed: rows.length, brier, accuracy, byPriority, causeLabeled: labeled.length, causeAgreement };
+    // Exploratory: share of runs that needed care, per predicted priority level.
+    const careByPriority = {};
+    for (const x of rows) {
+      const level = Math.round(x.d.answers.review_priority?.value ?? -1);
+      careByPriority[level] ||= { n: 0, needCare: 0 };
+      careByPriority[level].n++;
+      careByPriority[level].needCare += care.get(x.run.id)?.length ? 1 : 0;
+    }
+    report[name] = { reviewed: rows.length, brier, accuracy, byPriority, careByPriority, causeLabeled: labeled.length, causeAgreement };
   }
   return report;
 }
