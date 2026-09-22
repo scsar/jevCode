@@ -252,6 +252,14 @@ function revertRun(run) {
         fs.rmdirSync(full);
       }
     }
+    // The index may still hold the stat (size) of the run's version. Git then reports the restored
+    // file as modified without comparing content, even though it matches the index blob. Refresh the
+    // entry only when the content hash is identical, so no content is ever staged.
+    for (const p of restore) {
+      const staged = (tryGit(run.repo, ['ls-files', '-s', '--', p]) || '').split(/\s+/)[1];
+      const onDisk = tryGit(run.repo, ['hash-object', '--', p]);
+      if (staged && staged === onDisk) tryGit(run.repo, ['update-index', '--', p]);
+    }
   } catch (e) {
     return { ok: false, check: { ...check, problems: [`되돌리기 실패: ${String(e.stderr || e.message).trim().slice(0, 500)}`] } };
   }
