@@ -414,9 +414,15 @@ async function openRun(id) {
     document.querySelectorAll('[data-decision]').forEach((b) => b.className = b.dataset.decision === state.decision ? (state.decision === 'accepted' ? 'sel-ok' : 'sel-bad') : '');
     document.querySelectorAll('[data-explain]').forEach((b) => b.className = String(state.explainable) === b.dataset.explain ? 'sel' : '');
   };
+  // Switching the decision must not carry over a cause from the other decision (re-review after a
+  // mistaken reject kept "verification_failed" on an accept).
+  const syncCause = () => {
+    if (state.decision === 'accepted' && review?.decision !== 'accepted') causeEl.value = 'none';
+    if (state.decision === 'rejected' && causeEl.value === 'none') causeEl.value = '';
+  };
   document.querySelectorAll('[data-decision]').forEach((b) => b.onclick = () => {
     state.decision = b.dataset.decision;
-    if (state.decision === 'accepted' && !review) causeEl.value = 'none';
+    syncCause();
     paint();
   });
   document.querySelectorAll('[data-explain]').forEach((b) => b.onclick = () => { state.explainable = b.dataset.explain === 'true'; paint(); });
@@ -477,6 +483,7 @@ async function openRun(id) {
   if (!rcheck.ok) revertBtn.style.opacity = '0.5';
   revertBtn.onclick = async () => {
     state.decision = 'rejected';
+    syncCause();
     paint();
     if (!(await saveReview())) return;
     const result = await api(`/api/runs/${encodeURIComponent(run.id)}/revert`, { method: 'POST', body: '{}' });
@@ -491,7 +498,7 @@ async function openRun(id) {
   if (!check.ok) commitBtn.style.opacity = '0.5';
   commitBtn.onclick = async () => {
     state.decision = 'accepted';
-    if (!review) causeEl.value = 'none';
+    syncCause();
     paint();
     if (!(await saveReview())) return;
     const result = await api(`/api/runs/${encodeURIComponent(run.id)}/commit`, { method: 'POST', body: JSON.stringify({ message: document.getElementById('commitMsg').value }) });
