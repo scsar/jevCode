@@ -140,7 +140,8 @@ async function loadList(selectId) {
   const shown = filter === 'pending' ? pending : runs;
   document.getElementById('items').innerHTML = shown.length ? shown.map((r) => {
     const reviewed = (r.review ? badge(r.review.decision === 'accepted' ? ['수락', 'b-ok'] : ['거절', 'b-bad']) : '')
-      + (r.commit ? badge([`커밋 ${r.commit.sha.slice(0, 7)}`, 'b-ok']) : '');
+      + (r.commit ? badge([`커밋 ${r.commit.sha.slice(0, 7)}`, 'b-ok']) : '')
+      + (r.humanTasks && !r.review ? badge(['사람이 할 일', 'b-warn']) : '');
     const pr = r.shadow.jev?.answers?.review_priority?.value ?? r.shadow.rules?.answers?.review_priority?.value;
     return `<div class="item ${current === r.id ? 'active' : ''}" data-id="${esc(r.id)}">
       <div class="task">${esc(r.task)}</div>
@@ -269,8 +270,23 @@ function renderReviewPoints(run, chunks) {
   const added = tests.filter((t) => t.change === 'added');
   const removed = tests.filter((t) => t.change === 'removed');
   const testList = (items) => `<table>${items.map((t) => `<tr><td>${esc(t.name)}${t.kind === 'Theory' ? ` <span class="hint">(Theory${t.cases ? `, ${t.cases}케이스` : ''})</span>` : ''}</td><td class="hint">${esc(t.file.split('/').pop())}</td></tr>`).join('')}</table>`;
+  const human = extractSection(run.lastMessage, '사람이 할 일');
+  // Commands the agent wants a human to run: `inline` spans and fenced blocks, offered for copying only.
+  // Fenced blocks always count; inline spans only when they contain a space (a path alone is not a command).
+  const commands = human
+    ? [...human.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map((m) => m[1].trim())
+      .concat([...human.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`\n]+)`/g)].map((m) => m[1]).filter((c) => /\s/.test(c.trim())))
+    : [];
+  const humanBlock = human ? `<div class="warn-box" style="color:var(--text); border-color:var(--warn)">
+      <b>⚠ 사람이 할 일</b> <span class="hint">판정·커밋 전에 처리했는지 확인</span>
+      <pre style="margin-top:6px">${esc(human)}</pre>
+      ${commands.length ? `<table style="margin-top:6px">${commands.map((c, i) => `<tr><td><code>${esc(c)}</code></td><td style="width:60px"><button class="copy-cmd" data-cmd="${i}">복사</button></td></tr>`).join('')}</table>
+      <div class="hint">명령은 복사만 됩니다. 실행은 직접 터미널에서.</div>` : ''}
+    </div>` : '';
+  renderReviewPoints.lastCommands = commands;
   return `<section class="points"><h2>리뷰 요점</h2>
-    <div class="row"><b>기존 동작 변경</b><span class="hint">가장 위험한 부분. "없음"이면 새 코드만 추가된 것</span></div>
+    ${humanBlock}
+    <div class="row"${human ? ' style="margin-top:10px"' : ''}><b>기존 동작 변경</b><span class="hint">가장 위험한 부분. "없음"이면 새 코드만 추가된 것</span></div>
     ${behaviorBlock}
     <div class="row" style="margin-top:10px"><b>공개 API</b><span class="hint">다른 코드가 쓰게 될 이름과 모양</span></div>
     ${api.removed.length ? `<div class="warn-box"><b>⚠ 삭제된 공개 API ${api.removed.length}개</b> — 다른 코드가 쓰고 있지 않은지 확인하세요.${apiRows(api.removed)}</div>` : ''}
@@ -368,6 +384,14 @@ async function openRun(id) {
 
   // Per-file diff: clicking a changed file shows only that file's patch; the first file starts selected.
   const chunks = splitPatch(patch);
+  // Copy buttons for commands listed under "사람이 할 일" (copy only; nothing is executed from the page).
+  const humanCommands = renderReviewPoints.lastCommands || [];
+  document.querySelectorAll('.copy-cmd').forEach((b) => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(humanCommands[Number(b.dataset.cmd)]); b.textContent = '복사됨'; } catch { b.textContent = '실패'; }
+    setTimeout(() => { b.textContent = '복사'; }, 1500);
+  });
+  const hasHumanTasks = extractSection(run.lastMessage, '사람이 할 일') != null;
+
   const deltaRows = document.querySelectorAll('.file-row');
   const showFile = (i) => {
     deltaRows.forEach((row) => row.classList.toggle('sel', row.dataset.file === String(i)));
@@ -423,6 +447,7 @@ async function openRun(id) {
   const fileRows = check.files.map((f) => `<tr><td>${esc(f.status)}</td><td>${esc(f.path)}</td><td>${f.issue ? `<span style="color:var(--bad)">${esc(f.issue)}</span>` : ''}</td></tr>`).join('');
   panel.innerHTML = `
     <div class="row"><b>수락하고 커밋</b><span class="hint">이 실행이 바꾼 파일만 커밋합니다. push는 하지 않습니다.</span></div>
+    ${hasHumanTasks ? '<div class="hint" style="color:var(--warn)">⚠ 리뷰 요점에 "사람이 할 일"이 있습니다. 처리했는지 확인한 뒤 커밋하세요.</div>' : ''}
     ${check.files.length ? `<table>${fileRows}</table>` : ''}
     ${check.problems.map((p) => `<div class="hint" style="color:var(--bad)">${esc(p)}</div>`).join('')}
     <div class="row" style="margin-top:8px"><input id="commitMsg" style="flex:1; min-width:240px; border:1px solid var(--line); border-radius:6px; padding:5px 8px; background:var(--bg)" value="${esc(check.suggestedMessage)}">

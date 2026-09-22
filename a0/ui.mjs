@@ -162,6 +162,7 @@ function listRuns() {
     usage: r.usage,
     review: reviews.get(r.id) || null,
     commit: commits.get(r.id) || null,
+    humanTasks: /사람이 할 일/.test(r.lastMessage || ''),
     shadow: decisions.get(r.id) || {},
   }));
 }
