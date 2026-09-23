@@ -65,16 +65,17 @@
 | 규칙 코어 T1~T11 | 완료 | `behind-the-curtain/src/Core` |
 | Unity 프로토타입 U1~U3e | 완료 (카운터, 대가, 압박) | `behind-the-curtain/Assets/Scripts/Prototype` |
 | 연출가 적응 U4r | 완료 | 〃 |
-| 인형 AI T13~T15, U5 | 완료, **T15r로 수정 중** | `src/Core/Puppet*.cs`, `docs/ai-design.md` |
+| 인형 AI T13~T15, U5, T15r | 완료 | `src/Core/Puppet*.cs`, `docs/ai-design.md` |
+| 인형 상태 설계(몸·결·실·상황·연출가) | 설계 완료, T16a에서 첫 구현 | `docs/ai-design.md` "인형 상태" |
 | A0 평가 | 진행 중 (~10-05) | `jevcode/docs/design/JevCode_System_Design_v0.5.md` |
 
 ## 앞으로
 
 **바로 다음**
 
-1. **T15r** — 역할별 행동 계약과 금지 패턴 테스트. 명령은 `behind-the-curtain/docs/next-runs.md`.
-2. 시뮬레이션 궤적 확인 → Play로 재미 확인.
-3. **T16** — 공격 특성, 파츠와 노출, 체력과 자세 게이지.
+1. **T16a** — 인형 상태의 첫 구현(몸, 실 장력, 결, 상황, 조율 예산)과 다양성 지표. "지나치면 뒤에서 대기"도 함께 고친다. 명령은 `behind-the-curtain/docs/next-runs.md`에 쓴다.
+2. 시뮬레이션 궤적과 다양성 지표 확인 → Play로 재미 확인.
+3. **T16b** 파츠와 노출 → **T16c** 공격 특성. T16을 셋으로 나눈 건 한 run이 너무 무거워서다(T15r 한 번에 Pro 5시간 한도의 33%).
 
 **그다음**
 
@@ -143,7 +144,7 @@ git push                                                  # 푸시는 사람이
 | 격리 실험 | `jevcode/spikes/a-gate/README.md`, `jevcode/spikes/claude-sandbox/README.md` | 샌드박스 검증 결과와 빈틈 |
 | 구현 | `jevcode/a0/jevcode.mjs`, `ui.mjs`, `ui.html`, `decisions.mjs`, `twins.mjs` | 실행기, 리뷰 화면, 판단 제공자 |
 | 게임 기획 | `behind-the-curtain/docs/planning.md` | 방향, 카운터, 공격 속성·파츠, 장비, 전달 원칙 |
-| 인형 AI 설계 | `behind-the-curtain/docs/ai-design.md` | 구조, 관찰·의심도, 행동 계약, 금지 패턴, 봇 |
+| 인형 AI 설계 | `behind-the-curtain/docs/ai-design.md` | 구조, 관찰·의심도, 행동과 역할별 계약, 금지 패턴, 인형 상태(다양성), 봇 |
 | 실행 목록 | `behind-the-curtain/docs/next-runs.md` | 다음에 돌릴 명령과 리뷰 포인트 |
 | 에이전트 규칙 | `behind-the-curtain/AGENTS.md` | 코드·작업·Unity·커밋 규칙 |
 | 세계관 | `behind-the-curtain/docs/worldbuilding.md` | 설정 |
