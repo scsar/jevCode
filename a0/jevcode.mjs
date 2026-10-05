@@ -24,6 +24,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
+import { splitTask } from './taskfile.mjs';
 import { rejectedTwins } from './twins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -659,7 +660,10 @@ async function cmdRun(argv) {
     tag: 'value', model: 'value', 'claude-model': 'value', agent: 'value', 'timeout-min': 'value', 'prompt-file': 'value',
     'allow-pending': 'bool', 'allow-rejected': 'bool', 'no-fallback': 'bool',
   });
-  const task = opts['prompt-file'] ? fs.readFileSync(opts['prompt-file'], 'utf8') : rest.join(' ');
+  // A task file may carry the reviewer's checklist after a '리뷰 포인트' heading; the agent never sees it.
+  const fromFile = opts['prompt-file'] ? splitTask(fs.readFileSync(opts['prompt-file'], 'utf8')) : null;
+  const task = fromFile ? fromFile.task : rest.join(' ');
+  const reviewPoints = fromFile ? fromFile.reviewPoints : [];
   if (!task.trim()) die('usage: jevcode run [--tag t] [--agent codex|claude] [--model m] [--claude-model m] [--timeout-min n] [--prompt-file f] [--no-fallback] [--allow-pending] [--allow-rejected] "task"');
 
   const repo = repoRoot();
@@ -692,7 +696,7 @@ async function cmdRun(argv) {
   try {
     let fallbackFrom = null;
     for (;;) {
-      const out = await executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex, codexVer });
+      const out = await executeRun({ agent, why, fallbackFrom, opts, task, reviewPoints, repo, cfg, timeoutMs, codex, codexVer });
       if (!out.fallback) break;
       ({ agent, why, fallbackFrom } = { agent: 'claude', why: `Codex가 run 도중 한도 도달 (${out.id})`, fallbackFrom: out.id });
     }
@@ -703,7 +707,7 @@ async function cmdRun(argv) {
 
 // One agent run: snapshot, execute, record, verify, shadow. Returns { fallback: true } when Codex
 // stopped on its usage limit and the tree was restored so Claude can take the same task.
-async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, timeoutMs, codex, codexVer }) {
+async function executeRun({ agent, why, fallbackFrom, opts, task, reviewPoints = [], repo, cfg, timeoutMs, codex, codexVer }) {
   const id = newRunId();
   const runDir = path.join(ROOT, 'runs', id);
   const runTemp = path.join(TEMP_ROOT, id);
@@ -727,6 +731,7 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, tim
     // Echo what actually arrived: cmd.exe silently drops everything after the first line break.
     const tail = task.trim().slice(-50).replace(/\s+/g, ' ');
     console.log(`  task: ${task.length}자, ${task.split('\n').length}줄, 끝: "...${tail}"`);
+    if (reviewPoints.length) console.log(`  리뷰 포인트: ${reviewPoints.length}개 (실행기에는 보내지 않음, 리뷰 화면에 표시)`);
     const localServers = await localServerWarnings();
     for (const w of localServers) console.log(`  ! ${w}`);
     let cancelled = false;
@@ -809,6 +814,7 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, repo, cfg, tim
     const lastMessage = fs.existsSync(lastMessageFile) ? fs.readFileSync(lastMessageFile, 'utf8') : ev.messages.at(-1) || '';
     const record = {
       id, repo, tag: opts.tag || null, task: task.slice(0, 2000),
+      ...(reviewPoints.length ? { reviewPoints } : {}),
       agent, isolation: agent === 'claude' ? CLAUDE_ISOLATION : `codex os sandbox (${SANDBOX_MODE})`,
       codexVersion: codexVer, sandboxVerified: codexVer === VERIFIED_CODEX,
       model: (agent === 'claude' ? opts['claude-model'] || process.env.JEVCODE_CLAUDE_MODEL : opts.model) || null,

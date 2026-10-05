@@ -431,6 +431,8 @@ export async function start() {
           explainable: typeof body.explainable === 'boolean' ? body.explainable : null,
           reason: String(body.note || '').slice(0, 2000) || null,
           viewedMs: Number.isFinite(body.viewedMs) ? Math.round(body.viewedMs) : null,
+          // Which review points (from the task file) were ticked; reference only, not an A0 label.
+          ...(Array.isArray(body.checklist) ? { checklist: body.checklist.slice(0, 30).map(Boolean) } : {}),
           source: 'ui', at: new Date().toISOString(),
         };
         append(FILES.reviews, review);

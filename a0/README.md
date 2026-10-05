@@ -87,6 +87,7 @@ run을 시작할 때 `127.0.0.1:8080`(MCP for Unity)에서 서버가 돌고 있�
 ```powershell
 jevcode init --verify "npm test" --timeout-min 30   # 저장소마다 한 번. 검증이 없으면 --verify 생략
 jevcode run --tag feature "점프 쿨다운 추가"          # 태그: scaffold / feature / fix / refactor / switch-cold / switch-brief
+jevcode run --tag feature --prompt-file docs/runs/T17.md   # 긴 명령은 파일로 (아래 "명령 파일")
 jevcode log                                          # 최근 실행
 jevcode show <id>                                    # 상세 + shadow 판단 (id 앞부분만 입력해도 됨)
 jevcode review <id> accept|reject [--cause <원인>] [--explainable yes|no] [메모]
@@ -97,6 +98,26 @@ jevcode eval                                         # 판단 제공자와 revie
 ```
 
 실행 중 Ctrl+C를 누르면 Job 전체가 종료되고, 결과는 `cancelled`로 기록됩니다.
+
+### 명령 파일 (`--prompt-file`)
+
+여러 줄 명령은 붙여 넣는 대신 파일로 넘기는 것을 권장합니다. cmd의 줄 잘림, 따옴표가 닫히지 않아 PowerShell이 입력을 기다리는 문제, 예전 명령을 잘못 붙여 넣는 실수를 피할 수 있습니다.
+
+파일에 **`리뷰 포인트`로 시작하는 줄**(`## 리뷰 포인트`, `**리뷰 포인트**`, `리뷰 포인트: ...` 모두 가능)이 있으면, 그 줄부터 끝까지는 **리뷰어용 체크리스트**로 떼어 냅니다.
+
+- 실행기에는 그 위의 작업 본문만 보냅니다(`prompt.txt`에도 본문만 남습니다). shadow 판단의 상태도 본문으로만 만들므로, 판단 제공자가 받는 입력의 종류는 그대로입니다.
+- 체크리스트 항목은 `-`, `*`, `1.`, `1)` 글머리표마다 하나이고, 글머리표 없는 문단은 문단 하나가 한 항목입니다. 최대 30개입니다.
+- 항목은 run 기록(`reviewPoints`)에 남고, 리뷰 화면의 판정 위에 체크박스로 나옵니다. 체크한 항목은 리뷰와 함께 `checklist`로 저장됩니다(참고용, A0 라벨이 아님).
+- 작업 본문 안에서 줄을 `리뷰 포인트`로 시작하면 거기서 잘리므로, 본문에서는 그렇게 쓰지 않습니다.
+
+```markdown
+docs/ai-design.md의 '...'를 src/Core에 구현한다. ...
+테스트: ...
+
+## 리뷰 포인트
+- 무대 구성 선택 규칙이 diff에서 바뀌지 않았는지
+- 테스트 (d)가 무대 구성이 바뀌는 여러 교전을 실제로 돌리는지
+```
 
 ## Jev shadow
 
