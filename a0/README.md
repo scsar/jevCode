@@ -107,6 +107,12 @@ node --test --test-force-exit "a0/tests/*.test.mjs"
 
 임시 git 저장소와 임시 `JEVCODE_HOME`에서만 돌기 때문에 실제 A0 기록은 건드리지 않습니다. 스냅숏(추적 중인 파일이 `.gitignore`에 걸려도 유지), 자동 되돌리기와 리뷰 화면 되돌리기의 백업(`runs/<id>/restore-backup`, `revert-backup`), 평가에서 자동 리뷰 제외, 리뷰 전 shadow 답 숨김(서버 API까지), 리뷰 포인트 분리를 고정합니다.
 
+### 환경 변수
+
+실행기와 검증 명령에는 **필요한 이름만** 넘깁니다(`a0/env.mjs`). Windows 시스템 변수(PATH, SystemRoot, USERPROFILE, APPDATA 등), 실행기 설정 위치(CODEX_HOME, CLAUDE_CONFIG_DIR), 프록시, `DOTNET_`·`NUGET_`·`MSBUILD`·`UNITY_`로 시작하는 도구 설정만 넘어가고, `TYPESAFE_API_KEY` 같은 자격증명은 넘기지 않습니다. 접두어로 넘기는 이름이라도 KEY·TOKEN·SECRET 등이 들어 있으면 뺍니다.
+
+Codex와 Claude Code는 사용자 폴더의 파일로 로그인하므로 API 키가 필요 없습니다. API 키로 쓰는 경우처럼 일부러 넘길 이름이 있으면 `JEVCODE_ENV_PASS`에 쉼표로 적습니다(예: `$env:JEVCODE_ENV_PASS = "OPENAI_API_KEY"`). run 기록의 `envPassed`에 넘긴 이름(값은 아님)이 남습니다.
+
 ### 명령 파일 (`--prompt-file`)
 
 여러 줄 명령은 붙여 넣는 대신 파일로 넘기는 것을 권장합니다. cmd의 줄 잘림, 따옴표가 닫히지 않아 PowerShell이 입력을 기다리는 문제, 예전 명령을 잘못 붙여 넣는 실수를 피할 수 있습니다.

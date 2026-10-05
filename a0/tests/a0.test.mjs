@@ -139,4 +139,17 @@ test('review screen API hides shadow answers until the run is reviewed', async (
   }
 });
 
+test('run environment passes only needed names and never credentials', async () => {
+  const { runEnv } = await import('../env.mjs');
+  const source = { Path: 'C:\\bin', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\u', TYPESAFE_API_KEY: 'k1',
+    GEMINI_API_KEY: 'k2', GIT_ASKPASS: 'x', DOTNET_ROOT: 'C:\\dotnet', DOTNET_API_TOKEN: 't', RANDOM_VAR: 'r', TEMP: 'C:\\old' };
+  const env = runEnv(source, { TEMP: 'C:\\run', TMP: 'C:\\run' });
+  assert.deepEqual(Object.keys(env).sort(), ['DOTNET_ROOT', 'Path', 'SystemRoot', 'TEMP', 'TMP', 'USERPROFILE']);
+  assert.equal(env.TEMP, 'C:\\run');
+  const opted = runEnv({ ...source, JEVCODE_ENV_PASS: 'OPENAI_API_KEY, random_var', OPENAI_API_KEY: 'o' });
+  assert.equal(opted.OPENAI_API_KEY, 'o');
+  assert.equal(opted.RANDOM_VAR, 'r');
+  assert.equal(opted.TYPESAFE_API_KEY, undefined);
+});
+
 test.after(() => fs.rmSync(home, { recursive: true, force: true }));

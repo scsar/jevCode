@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
 import { splitTask } from './taskfile.mjs';
 import { restoreToTree, snapshotTree } from './tree.mjs';
+import { runEnv } from './env.mjs';
 import { rejectedTwins } from './twins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -685,7 +686,8 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, reviewPoints =
   const stateDir = path.join(runDir, 'codex-state');
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(runTemp, { recursive: true });
-  const env = { ...process.env, TEMP: runTemp, TMP: runTemp, ...(agent === 'claude' ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } : {}) };
+  // Only the names a run needs reach the agent and the verification sandbox; credentials stay out.
+  const env = runEnv(process.env, { TEMP: runTemp, TMP: runTemp, ...(agent === 'claude' ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } : {}) });
   const t0 = Date.now();
 
   try {
@@ -786,6 +788,8 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, reviewPoints =
     const record = {
       id, repo, tag: opts.tag || null, task: task.slice(0, 2000),
       ...(reviewPoints.length ? { reviewPoints } : {}),
+      // Names only, never values: what the agent and verification could see.
+      envPassed: Object.keys(env).sort(),
       agent, isolation: agent === 'claude' ? CLAUDE_ISOLATION : `codex os sandbox (${SANDBOX_MODE})`,
       codexVersion: codexVer, sandboxVerified: codexVer === VERIFIED_CODEX,
       model: (agent === 'claude' ? opts['claude-model'] || process.env.JEVCODE_CLAUDE_MODEL : opts.model) || null,
