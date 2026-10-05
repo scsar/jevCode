@@ -72,6 +72,8 @@
   .checklist { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
   .checklist label { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; cursor: pointer; }
   .checklist input { margin-top: 3px; }
+  .checklist .badge { margin-right: 2px; }
+  .checklist button.copy-point { font-size: 11px; padding: 0 6px; margin-left: 2px; }
   .hint { color: var(--muted); font-size: 12px; }
   .done { color: var(--ok); font-weight: 600; }
   dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 760px; width: 92vw; }
@@ -127,6 +129,22 @@ const secs = (ms) => (ms == null ? '-' : ms >= 60000 ? `${Math.floor(ms / 60000)
 const OUTCOME = { completed: ['완료', 'b-ok'], failed: ['실패', 'b-bad'], timed_out: ['시간초과', 'b-bad'], cancelled: ['취소', 'b-warn'], unknown: ['불명', 'b-bad'], quota_exhausted: ['한도소진', 'b-warn'] };
 const VERIFY = { passed: ['검증 통과', 'b-ok'], failed: ['검증 실패', 'b-bad'], skipped: ['검증 없음', 'b-muted'], unknown: ['검증 불명', 'b-warn'] };
 const badge = ([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`;
+
+// Review point "[어디서] 무엇을 하면 → 무엇이 보이면 통과": the leading tag becomes a badge (where to
+// check), and `code` spans that look like commands (contain a space) get a copy button. Commands
+// are collected into `commands`; nothing is executed from the page.
+const POINT_TAGS = { 'Play': 'b-warn', '시뮬레이터': 'b-ok', '터미널': 'b-ok' };
+function renderPoint(text, commands) {
+  const m = /^\s*\[([^\]]+)\]\s*/.exec(text);
+  const head = m ? badge([m[1], POINT_TAGS[m[1]] || 'b-muted']) + ' ' : '';
+  const body = m ? text.slice(m[0].length) : text;
+  return head + body.split('`').map((part, i) => {
+    if (i % 2 === 0) return esc(part);
+    if (!/\s/.test(part.trim())) return `<code>${esc(part)}</code>`;
+    commands.push(part.trim());
+    return `<code>${esc(part)}</code> <button class="copy-point" data-cmd="${commands.length - 1}">복사</button>`;
+  }).join('');
+}
 const PRIORITY = ['가볍게', '보통', '꼼꼼히'];
 
 let meta = { causes: [], causeText: {} };
@@ -348,12 +366,13 @@ async function openRun(id) {
   document.querySelectorAll('.item').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
   const { run, prompt, twins, review, decisions, decisionCount, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
   const u = run.usage;
+  const pointCommands = [];
   const failed = ['failed', 'timed_out', 'unknown'].includes(run.executionOutcome);
   document.getElementById('detail').innerHTML = `
     <section class="reviewbox">
       <h2>리뷰 ${review ? `<span class="done">· ${review.decision === 'accepted' ? '수락' : '거절'}됨 (${esc(when(review.at))})</span>` : ''}</h2>
       ${run.reviewPoints?.length ? `<div class="checklist"><div class="row"><b>리뷰 포인트</b><span class="hint">명령 파일에 적은 확인 항목. 실행기에는 보내지 않았다. 체크는 리뷰와 함께 저장된다(참고용)</span></div>
-        ${run.reviewPoints.map((p, i) => `<label><input type="checkbox" data-point="${i}"${review?.checklist?.[i] ? ' checked' : ''}><span>${esc(p)}</span></label>`).join('')}</div>` : ''}
+        ${run.reviewPoints.map((p, i) => `<label><input type="checkbox" data-point="${i}"${review?.checklist?.[i] ? ' checked' : ''}><span>${renderPoint(p, pointCommands)}</span></label>`).join('')}</div>` : ''}
       <div class="row"><span class="label">판정</span>
         <button data-decision="accepted">수락</button><button data-decision="rejected">거절</button></div>
       <div class="row"><span class="label">원인</span>
@@ -401,6 +420,12 @@ async function openRun(id) {
   const humanCommands = renderReviewPoints.lastCommands || [];
   document.querySelectorAll('.copy-cmd').forEach((b) => b.onclick = async () => {
     try { await navigator.clipboard.writeText(humanCommands[Number(b.dataset.cmd)]); b.textContent = '복사됨'; } catch { b.textContent = '실패'; }
+    setTimeout(() => { b.textContent = '복사'; }, 1500);
+  });
+  // Copy buttons inside review points. They sit in a <label>, so keep the click from ticking the box.
+  document.querySelectorAll('.copy-point').forEach((b) => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    try { await navigator.clipboard.writeText(pointCommands[Number(b.dataset.cmd)]); b.textContent = '복사됨'; } catch { b.textContent = '실패'; }
     setTimeout(() => { b.textContent = '복사'; }, 1500);
   });
   const hasHumanTasks = extractSection(run.lastMessage, '사람이 할 일') != null;

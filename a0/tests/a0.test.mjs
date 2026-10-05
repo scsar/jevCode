@@ -139,6 +139,24 @@ test('review screen API hides shadow answers until the run is reviewed', async (
   }
 });
 
+test('review points render a where-to-check badge and copyable commands, escaped', () => {
+  // The renderer lives inside ui.html's page script; pull out the pure helpers it needs.
+  const html = fs.readFileSync(new URL('../ui.html', import.meta.url), 'utf8');
+  const pick = (re) => { const m = re.exec(html); assert.ok(m, `missing ${re}`); return m[0]; };
+  const src = [pick(/const esc = [^\n]*\n/), pick(/const badge = [^\n]*\n/),
+    pick(/const POINT_TAGS = [^\n]*\n/), pick(/function renderPoint\(text, commands\) \{[\s\S]*?\n\}\n/)].join('');
+  const renderPoint = new Function(`${src}; return renderPoint;`)();
+  const commands = [];
+  const out = renderPoint('[시뮬레이터] `dotnet run --project src/Core.Sim -- --cast` → 표에서 `Protect` 없는 개체가 <Guard>가 아님', commands);
+  assert.match(out, /^<span class="badge b-ok">시뮬레이터<\/span> /);
+  assert.deepEqual(commands, ['dotnet run --project src/Core.Sim -- --cast']);
+  assert.match(out, /<code>Protect<\/code>(?! <button)/);
+  assert.ok(out.includes('&lt;Guard&gt;') && !out.includes('<Guard>'));
+  assert.match(renderPoint('[Play] 교전 2', []), /badge b-warn/);
+  assert.match(renderPoint('[무언가] x', []), /badge b-muted/);
+  assert.equal(renderPoint('태그 없음', []), '태그 없음');
+});
+
 test('run environment passes only needed names and never credentials', async () => {
   const { runEnv } = await import('../env.mjs');
   const source = { Path: 'C:\\bin', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\u', TYPESAFE_API_KEY: 'k1',
