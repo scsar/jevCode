@@ -209,6 +209,13 @@ function revertRun(run) {
   const todo = check.files.filter((f) => !f.issue);
   const restore = todo.filter((f) => f.action !== 'delete').map((f) => f.path);
   const removed = [];
+  // Edits a person made during the run look like the run's own, so copy every file this revert
+  // overwrites or deletes aside first.
+  const backup = path.join(ROOT, 'runs', run.id, 'revert-backup');
+  for (const p of [...todo.map((f) => f.path), ...check.metas]) {
+    const src = path.join(run.repo, p);
+    if (fs.existsSync(src)) fs.cpSync(src, path.join(backup, p), { recursive: true });
+  }
   try {
     // Modified files: write the start blob keeping the file's current line endings. Letting git
     // check it out would apply core.autocrlf and turn an LF file into CRLF, which then shows up as a
@@ -264,7 +271,7 @@ function revertRun(run) {
   } catch (e) {
     return { ok: false, check: { ...check, problems: [`되돌리기 실패: ${String(e.stderr || e.message).trim().slice(0, 500)}`] } };
   }
-  const record = { runId: run.id, restored: restore, removed, at: new Date().toISOString() };
+  const record = { runId: run.id, restored: restore, removed, ...(fs.existsSync(backup) ? { backup } : {}), at: new Date().toISOString() };
   append(FILES.reverts, record);
   return { ok: true, revert: record };
 }
@@ -306,7 +313,8 @@ function listRuns() {
     commit: commits.get(r.id) || null,
     reverted: !!revertRecord(r.id),
     humanTasks: /사람이 할 일/.test(r.lastMessage || ''),
-    shadow: decisions.get(r.id) || {},
+    // Hidden until the run is reviewed (blind review), same as the detail endpoint.
+    shadow: reviews.has(r.id) ? decisions.get(r.id) || {} : {},
   }));
 }
 
@@ -316,14 +324,18 @@ function runDetail(id) {
   const dir = path.join(ROOT, 'runs', id);
   const patchFile = path.join(dir, 'diff.patch');
   const patch = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : null;
+  const review = latestReviews().get(id) || null;
+  const decisions = readJsonl(FILES.decisions).filter((d) => d.runId === id);
   return {
     run,
     prompt: taskText(ROOT, run),
     // Earlier runs rejected for the agent's work with the very same task: shown so a re-pasted old
     // command is visible from the record itself.
     twins: rejectedTwins({ root: ROOT, runs: readJsonl(FILES.runs), reviews: latestReviews(), repo: run.repo, task: taskText(ROOT, run), beforeId: run.id }),
-    review: latestReviews().get(id) || null,
-    decisions: readJsonl(FILES.decisions).filter((d) => d.runId === id),
+    review,
+    // Blind review is enforced here, not only on screen: answers leave the server after the review.
+    decisions: review ? decisions : [],
+    decisionCount: decisions.length,
     verificationTails: run.verification.map((_, i) => readTail(path.join(dir, `verify-${i}.out.txt`), 60)),
     patch: patch && patch.length > 400_000 ? `${patch.slice(0, 400_000)}\n[truncated in UI]` : patch,
     hasRawEvents: fs.existsSync(path.join(dir, 'events.jsonl')),

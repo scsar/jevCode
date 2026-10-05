@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAUSES, FIELDS_SENT, buildState, evaluate, formatDecision, providers, runShadow } from './decisions.mjs';
 import { splitTask } from './taskfile.mjs';
+import { restoreToTree, snapshotTree } from './tree.mjs';
 import { rejectedTwins } from './twins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -145,15 +146,6 @@ function acquireLock(repo, runId) {
 }
 
 // Tree of tracked + untracked (non-ignored) files via a throwaway index; the user's index is untouched.
-function snapshotTree(repo, runDir) {
-  const index = path.join(runDir, 'snapshot.index');
-  fs.rmSync(index, { force: true });
-  git(repo, ['add', '-A'], { GIT_INDEX_FILE: index });
-  const tree = git(repo, ['write-tree'], { GIT_INDEX_FILE: index });
-  fs.rmSync(index, { force: true });
-  return tree;
-}
-
 // Index *entries* (mode, blob, stage, path), not the index file's bytes: `git status` from the user
 // or an editor rewrites cached stat data in .git/index without changing anything, which made runs
 // look like policy violations.
@@ -344,27 +336,6 @@ function quotaActive(agent) {
 }
 
 const hhmm = (iso) => new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-// Undo a run that stopped on a usage limit so the fallback run starts from the same tree. The lock
-// is still held, so nothing else changed the files. Returns null when the tree could not be matched.
-function restoreToTree(repo, runDir, tree) {
-  const now = snapshotTree(repo, runDir);
-  const lines = tryGit(repo, ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-renames', tree, now]).split('\n').filter(Boolean);
-  const restored = [];
-  const removed = [];
-  for (const line of lines) {
-    const [status, file] = line.split('\t');
-    if (status === 'A') { fs.rmSync(path.join(repo, file), { force: true }); removed.push(file); continue; }
-    git(repo, ['restore', `--source=${tree}`, '--worktree', '--', file], { GIT_LITERAL_PATHSPECS: '1' });
-    restored.push(file);
-  }
-  // Same index-stat refresh as the UI revert: only for files whose content matches the index blob.
-  for (const file of restored) {
-    const staged = tryGit(repo, ['ls-files', '-s', '--', file]).split(/\s+/)[1];
-    if (staged && staged === tryGit(repo, ['hash-object', '--', file])) tryGit(repo, ['update-index', '--', file]);
-  }
-  return snapshotTree(repo, runDir) === tree ? { restored, removed } : null;
-}
 
 // Runs `command` inside a fresh Job Object; resolves with the launcher's final state.
 function launch({ stateFile, timeoutMs, command, stdinFile, stdoutFile, stderrFile, env, cwd, onSpawn }) {
@@ -847,7 +818,8 @@ async function executeRun({ agent, why, fallbackFrom, opts, task, reviewPoints =
       const at = new Date().toISOString();
       appendJsonl(REVIEWS, { id, decision: 'rejected', cause: 'quota_or_rate_limit', explainable: true,
         reason: 'Codex 사용 한도로 중단. 변경을 자동으로 되돌리고 같은 명령을 Claude로 다시 실행함', viewedMs: null, source: 'auto', at });
-      appendJsonl(REVERTS, { runId: id, restored: autoFallback.restored, removed: autoFallback.removed, at, source: 'auto' });
+      appendJsonl(REVERTS, { runId: id, restored: autoFallback.restored, removed: autoFallback.removed,
+        ...(autoFallback.backup ? { backup: autoFallback.backup } : {}), at, source: 'auto' });
       console.log(`\n  → 변경 ${autoFallback.restored.length + autoFallback.removed.length}개를 되돌렸습니다. 같은 명령을 Claude로 다시 실행합니다.\n`);
     }
 

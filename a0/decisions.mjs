@@ -194,7 +194,8 @@ export function evaluate(runs, reviews, decisions) {
   for (const name of new Set(decisions.map((d) => d.provider))) {
     const rows = runs
       .map((r) => ({ run: r, review: reviewById.get(r.id), d: latest.get(`${name}|${r.id}`) }))
-      .filter((x) => x.review && x.d);
+      // Automatic reviews (e.g. a quota stop) are operational records, not the user's judgement.
+      .filter((x) => x.review && x.review.source !== 'auto' && x.d);
     const y = (x) => (x.review.decision === 'accepted' ? 1 : 0);
     const withP = rows.filter((x) => typeof x.d.answers.completion?.value === 'number');
     const brier = withP.length ? withP.reduce((s, x) => s + (x.d.answers.completion.value - y(x)) ** 2, 0) / withP.length : null;

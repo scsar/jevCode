@@ -99,6 +99,14 @@ jevcode eval                                         # 판단 제공자와 revie
 
 실행 중 Ctrl+C를 누르면 Job 전체가 종료되고, 결과는 `cancelled`로 기록됩니다.
 
+### 회귀 테스트
+
+```powershell
+node --test --test-force-exit "a0/tests/*.test.mjs"
+```
+
+임시 git 저장소와 임시 `JEVCODE_HOME`에서만 돌기 때문에 실제 A0 기록은 건드리지 않습니다. 스냅숏(추적 중인 파일이 `.gitignore`에 걸려도 유지), 자동 되돌리기와 리뷰 화면 되돌리기의 백업(`runs/<id>/restore-backup`, `revert-backup`), 평가에서 자동 리뷰 제외, 리뷰 전 shadow 답 숨김(서버 API까지), 리뷰 포인트 분리를 고정합니다.
+
 ### 명령 파일 (`--prompt-file`)
 
 여러 줄 명령은 붙여 넣는 대신 파일로 넘기는 것을 권장합니다. cmd의 줄 잘림, 따옴표가 닫히지 않아 PowerShell이 입력을 기다리는 문제, 예전 명령을 잘못 붙여 넣는 실수를 피할 수 있습니다.

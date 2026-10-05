@@ -346,7 +346,7 @@ async function openRun(id) {
   current = id;
   openedAt = performance.now();
   document.querySelectorAll('.item').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
-  const { run, prompt, twins, review, decisions, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
+  const { run, prompt, twins, review, decisions, decisionCount, verificationTails, patch, hasRawEvents, dir } = await api(`/api/runs/${encodeURIComponent(id)}`);
   const u = run.usage;
   const failed = ['failed', 'timed_out', 'unknown'].includes(run.executionOutcome);
   document.getElementById('detail').innerHTML = `
@@ -392,7 +392,7 @@ async function openRun(id) {
     <section><h2>Shadow 판단 (실행에는 영향 없음)</h2>
       ${review
         ? `<table><tr><th>제공자</th><th>리뷰 우선순위</th><th>완료 확률</th><th>실패 원인</th><th>지연</th></tr>${latestPerProvider(decisions).map(renderDecision).join('') || '<tr><td colspan="5" class="hint">없음</td></tr>'}</table>`
-        : `<p class="hint">리뷰를 저장한 뒤에 공개됩니다(${decisions.length}건 기록됨). 리뷰가 판단 제공자를 채점하는 정답이므로, 먼저 보면 판정이 끌려갑니다.</p>`}</section>
+        : `<p class="hint">리뷰를 저장한 뒤에 공개됩니다(${decisionCount}건 기록됨). 리뷰가 판단 제공자를 채점하는 정답이므로, 먼저 보면 판정이 끌려갑니다.</p>`}</section>
     <p class="hint">기록 위치: ${esc(dir)}${hasRawEvents ? ' · 원시 이벤트 보존됨' : ''}</p>`;
 
   // Per-file diff: clicking a changed file shows only that file's patch; the first file starts selected.
